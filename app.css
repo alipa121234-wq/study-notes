@@ -367,3 +367,9 @@ body.side-open #sideMask{display:block;}
 
 /* 沒有本機 Python 伺服器時（例如部署到靜態主機），OCR 用不了就別顯示 */
 body.no-ocr .bar button[data-a="ocr"]{display:none;}
+
+/* 按下「✍️ 筆寫成字」之後，短暫標出該往哪裡寫 */
+.tblock .content.await-pen{
+  outline:2px dashed var(--accent);outline-offset:6px;border-radius:6px;
+  min-height:3.2em;
+}

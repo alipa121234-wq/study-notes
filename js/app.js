@@ -528,14 +528,15 @@
     /* 在文字段落上用觸控筆畫線，多半是想「寫字變成文字」。
        iOS 的手寫轉文字要筆能碰到文字區，但畫筆模式下畫布會把筆攔走，
        所以提醒一次該切到哪個模式。 */
-    if (b.type === 'text') {
-      cv.addEventListener('pointerdown', function (e) {
-        if (e.pointerType !== 'pen' || Ink.mode === 'select') return;
-        if (sessionStorage.getItem('sn_scribblehint')) return;
-        sessionStorage.setItem('sn_scribblehint', '1');
-        toast('想把手寫變成文字嗎？先切到 🖱️ 選取模式，再用筆直接寫在段落上');
-      }, true);
-    }
+    cv.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'pen') return;
+      if (b.type === 'text' && Ink.mode === 'select') return;
+      if (sessionStorage.getItem('sn_scribblehint')) return;
+      sessionStorage.setItem('sn_scribblehint', '1');
+      toast(b.type === 'sketch'
+        ? '手寫區只保留筆跡，不會變成文字。要文字請按工具列的「✍️ 筆寫成字」'
+        : '想把手寫變成文字嗎？按工具列的「✍️ 筆寫成字」');
+    }, true);
 
     wrap.appendChild(content);
     wrap.appendChild(cv);
@@ -1058,6 +1059,33 @@
         location.replace(location.pathname + '?r=' + Date.now());
       };
       save().then(go, go);
+    });
+
+    /* 用觸控筆寫出「文字」的條件有兩個，而且兩個都不直覺：
+         1. 必須在選取模式 —— 畫筆模式下畫布會把筆攔走
+         2. 必須寫在文字段落上 —— 手寫區是畫布，iOS 眼中沒有文字輸入框
+       期待使用者自己選中「🖱️ 選取」這個看起來完全不像寫字的工具是不合理的，
+       所以給一顆按鈕一次把兩件事都準備好。 */
+    $('#btnHandwrite').addEventListener('click', function () {
+      Ink.setMode('select');
+      var blocks = note.blocks || [];
+      var target = null;
+      for (var i = blocks.length - 1; i >= 0; i--) {
+        if (blocks[i].type === 'text') { target = blocks[i]; break; }
+      }
+      if (!target) {
+        target = M.newBlock('text');
+        blocks.push(target);
+        renderBlocks();
+        markDirty();
+      }
+      var el = $('.block[data-id="' + target.id + '"] .content');
+      if (!el) return;
+      el.focus();
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.add('await-pen');
+      setTimeout(function () { el.classList.remove('await-pen'); }, 2500);
+      toast('用觸控筆直接寫在這一塊上，iOS 會把它轉成文字');
     });
 
     $('#btnPenOnly').addEventListener('click', function () {
