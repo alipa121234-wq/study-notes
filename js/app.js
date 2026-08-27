@@ -476,7 +476,7 @@
     if (b.type === 'text') {
       content.contentEditable = 'true';
       content.spellcheck = false;
-      content.setAttribute('data-ph', '在這裡打字、或按 🎙️ 用說的…');
+      content.setAttribute('data-ph', '在這裡打字、用觸控筆寫字、或按 🎙️ 用說的…');
       content.innerHTML = b.html || '';
       var ph = function () { content.classList.toggle('ph', !content.textContent.trim()); };
       ph();
@@ -505,9 +505,10 @@
       content.style.overflow = 'hidden';
       var hint = document.createElement('div');
       hint.className = 'sk-hint';
-      hint.innerHTML = '✍️ <b>手寫區</b>　這一區是用「筆」寫的，不能打字<br>' +
+      hint.innerHTML = '✍️ <b>手寫區</b>　這一區保留原本的筆跡，<b>不會轉成文字</b><br>' +
         '按工具列的 🖊️（或鍵盤 <b>B</b>）就能直接在這裡寫字、畫圖<br>' +
-        '<span class="sk-sub">要打字請改用「＋文字」· 用不到可以按右上角 🗑 刪掉 · 右下角可拖曳改高度</span>';
+        '<span class="sk-sub">想讓手寫「變成文字」請改用「＋文字」，在 🖱️ 選取模式下用觸控筆寫 · ' +
+        '用不到可以按右上角 🗑 刪掉 · 右下角可拖曳改高度</span>';
       content.appendChild(hint);
       var t = null;
       new ResizeObserver(function () {
@@ -523,6 +524,18 @@
     cv.className = 'ink';
     canvasMap.set(cv, b);
     Ink.attach(cv, b);
+
+    /* 在文字段落上用觸控筆畫線，多半是想「寫字變成文字」。
+       iOS 的手寫轉文字要筆能碰到文字區，但畫筆模式下畫布會把筆攔走，
+       所以提醒一次該切到哪個模式。 */
+    if (b.type === 'text') {
+      cv.addEventListener('pointerdown', function (e) {
+        if (e.pointerType !== 'pen' || Ink.mode === 'select') return;
+        if (sessionStorage.getItem('sn_scribblehint')) return;
+        sessionStorage.setItem('sn_scribblehint', '1');
+        toast('想把手寫變成文字嗎？先切到 🖱️ 選取模式，再用筆直接寫在段落上');
+      }, true);
+    }
 
     wrap.appendChild(content);
     wrap.appendChild(cv);
