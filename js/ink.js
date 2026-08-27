@@ -131,7 +131,12 @@
   }
 
   /* ---------- 繪製 ---------- */
-  function paintStroke(ctx, block, st, w, h) {
+  /**
+   * @param startIdx 只從第幾段開始畫（畫筆專用）。
+   *   畫筆是逐段畫的，補畫新的一段跟整條重畫結果一樣，
+   *   所以寫字途中不必每次都把整塊畫布重來一遍。
+   */
+  function paintStroke(ctx, block, st, w, h, startIdx) {
     var pts = st.pts;
     if (!pts.length) return;
     ctx.save();
@@ -153,7 +158,7 @@
       ctx.stroke();
     } else {
       // 有筆壓：逐段畫，寬度隨壓力變化
-      for (var j = 1; j < pts.length; j++) {
+      for (var j = Math.max(1, startIdx || 1); j < pts.length; j++) {
         var a = toPx(block, pts[j - 1][0], pts[j - 1][1], w, h);
         var b = toPx(block, pts[j][0], pts[j][1], w, h);
         var pr = pts[j][2];
@@ -263,17 +268,54 @@
       Ink.render(cv, block);
     }
 
+    /* 螢光筆是一整條半透明路徑，逐段補畫會在接縫處疊出深色，
+       只能整塊重畫 —— 但用 rAF 節流，一個影格最多一次。 */
+    var rafId = 0;
+    function scheduleFull() {
+      if (rafId) return;
+      rafId = requestAnimationFrame(function () { rafId = 0; Ink.render(cv, block); });
+    }
+
+    /* 畫筆：只補畫剛加進來的那幾段。
+       原本每次移動都重畫全部筆跡，寫越多越頓（複雜度隨筆畫數線性成長）。 */
+    function appendFrom(idx) {
+      var w = cv.__w, h = cv.__h;
+      if (!w || !h) { Ink.render(cv, block); return; }
+      var ctx = cv.getContext('2d');
+      var dpr = Math.min(2, global.devicePixelRatio || 1);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      paintStroke(ctx, block, curStroke, w, h, idx);
+    }
+
     cv.addEventListener('pointermove', function (e) {
       if (!drawing || e.pointerId !== pid) return;
       e.preventDefault();
-      var p = pos(e);
-      if (Ink.mode === 'eraser') { eraseAt(p); return; }
+
+      if (Ink.mode === 'eraser') { eraseAt(pos(e)); return; }
       if (!curStroke) return;
-      var last = curStroke.pts[curStroke.pts.length - 1];
-      var lp = toPx(block, last[0], last[1], p[2], p[3]);
-      if (Math.abs(lp[0] - p[0]) + Math.abs(lp[1] - p[1]) < 1.2) return;
-      curStroke.pts.push(pt(p, e));
-      Ink.render(cv, block);
+
+      /* Apple Pencil 一個影格會取樣好幾次，但瀏覽器只把最後一點給你，
+         中間的軌跡全丟掉，快速筆畫就變成一節一節的折線。
+         getCoalescedEvents() 才拿得到那個影格裡的所有取樣點。 */
+      /* 注意：getCoalescedEvents() 可能回傳空陣列，而空陣列是 truthy，
+         用 `|| [e]` 接不住，會變成整筆只剩下按下去的那一個點。 */
+      var evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+      if (!evs.length) evs = [e];
+      var r = cv.getBoundingClientRect();     // 一個影格量一次就好
+      var from = curStroke.pts.length;
+
+      for (var i = 0; i < evs.length; i++) {
+        var ev = evs[i];
+        var p = [ev.clientX - r.left, ev.clientY - r.top, r.width, r.height];
+        var last = curStroke.pts[curStroke.pts.length - 1];
+        var lp = toPx(block, last[0], last[1], p[2], p[3]);
+        if (Math.abs(lp[0] - p[0]) + Math.abs(lp[1] - p[1]) < 0.7) continue;
+        curStroke.pts.push(pt(p, ev));
+      }
+      if (curStroke.pts.length === from) return;
+
+      if (curStroke.tool === 'hl') scheduleFull();
+      else appendFrom(from);
     });
 
     function finish(e) {

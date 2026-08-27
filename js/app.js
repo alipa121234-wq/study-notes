@@ -1082,12 +1082,23 @@
     var savedRange = null;      // iOS 上點按鈕會把選取收掉，先存起來待會還原
     var LABEL = ['挖空填空', '名詞解釋', '易錯重點', '整句問答', '只標記'];
 
-    /* 三種事件都要擋。iOS 不一定走 pointer 事件，漏掉哪一個，
-       手指一碰按鈕選取就被收走，套用時等於沒選任何東西。 */
-    function keepSelection(el) {
-      ['pointerdown', 'touchstart', 'mousedown'].forEach(function (ev) {
-        el.addEventListener(ev, function (e) { e.preventDefault(); }, { passive: false });
-      });
+    /**
+     * 觸控裝置上的按鈕要用 touchend 直接觸發。
+     * 千萬不能在 touchstart 上 preventDefault —— 那會讓 iOS 不再合成 click，
+     * 按鈕就完全按不動了（看得到、點不到）。
+     * 選取被收走的問題改由 applySel() 還原 savedRange 處理。
+     */
+    function onTap(el, fn) {
+      var viaTouch = false;
+      el.addEventListener('touchend', function (e) {
+        e.preventDefault();          // 這裡擋掉就不會再補一次 click
+        viaTouch = true;
+        fn();
+        setTimeout(function () { viaTouch = false; }, 500);
+      }, { passive: false });
+      el.addEventListener('click', function () { if (!viaTouch) fn(); });
+      /* 滑鼠按下時不要讓選取消失（桌機） */
+      el.addEventListener('mousedown', function (e) { e.preventDefault(); });
     }
 
     for (var i = 1; i <= 5; i++) {
@@ -1096,16 +1107,14 @@
         b.className = 'sw hl-' + n;
         b.title = LABEL[n - 1];
         b.textContent = n;
-        keepSelection(b);
-        b.addEventListener('click', function () { applySel('hl', n); });
+        onTap(b, function () { applySel('hl', n); });
         bar.appendChild(b);
       })(i);
     }
     var clr = document.createElement('button');
     clr.textContent = '✕';
     clr.title = '清除標記';
-    keepSelection(clr);
-    clr.addEventListener('click', function () { applySel('hl', 0); });
+    onTap(clr, function () { applySel('hl', 0); });
     bar.appendChild(clr);
 
     function applySel(kind, n) {
