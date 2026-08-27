@@ -1961,13 +1961,18 @@
   keepStorage();
 
   /* 圖片轉文字要靠本機的 Python 伺服器。部署到靜態主機之後那個端點不存在，
-     按鈕留著只會讓人按了出錯，所以先探測再決定要不要顯示。 */
-  fetch('health', { cache: 'no-store' })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (j) {
-      document.body.classList.toggle('no-ocr', !(j && j.ocr));
-    })
-    .catch(function () { document.body.classList.add('no-ocr'); });
+     按鈕留著只會讓人按了出錯，所以要先判斷。
+     先用網址判斷是不是本機／區網 —— 直接對靜態主機發探測請求的話，
+     那個 404 會留一個紅色錯誤在 console 裡，看了以為壞掉。 */
+  var LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[?::1\]?|.+\.local|10\..+|192\.168\..+|172\.(1[6-9]|2\d|3[01])\..+)$/;
+  if (!LOCAL_HOST.test(location.hostname)) {
+    document.body.classList.add('no-ocr');
+  } else {
+    fetch('health', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { document.body.classList.toggle('no-ocr', !(j && j.ocr)); })
+      .catch(function () { document.body.classList.add('no-ocr'); });
+  }
 
   Promise.all([Store.all(), Store.folders()]).then(function (r) {
     notes = r[0];
