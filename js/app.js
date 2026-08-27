@@ -1079,15 +1079,24 @@
 
     /* 沒有實體鍵盤就按不出 Alt+1~5，改成選取文字後浮一排顏色出來 */
     var bar = $('#selbar');
-    Ink.palette();                       // 先確保 Ink 已初始化
+    var savedRange = null;      // iOS 上點按鈕會把選取收掉，先存起來待會還原
     var LABEL = ['挖空填空', '名詞解釋', '易錯重點', '整句問答', '只標記'];
+
+    /* 三種事件都要擋。iOS 不一定走 pointer 事件，漏掉哪一個，
+       手指一碰按鈕選取就被收走，套用時等於沒選任何東西。 */
+    function keepSelection(el) {
+      ['pointerdown', 'touchstart', 'mousedown'].forEach(function (ev) {
+        el.addEventListener(ev, function (e) { e.preventDefault(); }, { passive: false });
+      });
+    }
+
     for (var i = 1; i <= 5; i++) {
       (function (n) {
         var b = document.createElement('button');
         b.className = 'sw hl-' + n;
         b.title = LABEL[n - 1];
         b.textContent = n;
-        b.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+        keepSelection(b);
         b.addEventListener('click', function () { applySel('hl', n); });
         bar.appendChild(b);
       })(i);
@@ -1095,17 +1104,23 @@
     var clr = document.createElement('button');
     clr.textContent = '✕';
     clr.title = '清除標記';
-    clr.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+    keepSelection(clr);
     clr.addEventListener('click', function () { applySel('hl', 0); });
     bar.appendChild(clr);
 
     function applySel(kind, n) {
+      /* 就算前面擋不住，這裡再把選取範圍放回去 —— 不然套用時
+         選取是空的，按了完全沒反應（顏色不會出現） */
+      var sel = window.getSelection();
+      if (savedRange && (!sel.rangeCount || sel.isCollapsed)) {
+        try { sel.removeAllRanges(); sel.addRange(savedRange); } catch (e) { /* 已失效 */ }
+      }
       if (n) Editor.mark(kind, n); else Editor.clearMarks();
       var root = Editor.currentRoot();
       if (root) root.dispatchEvent(new Event('input'));
       hideSel();
     }
-    function hideSel() { bar.classList.remove('on'); }
+    function hideSel() { bar.classList.remove('on'); savedRange = null; }
 
     /* 在標題欄選字是常見的誤會：標題是 <input>，放不了螢光筆的標記，
        出題也只認文字段落。與其讓色條默默不出現，不如講清楚。 */
@@ -1125,17 +1140,30 @@
         titleHint();
         return;
       }
-      var r = sel.getRangeAt(0).getBoundingClientRect();
+      var range = sel.getRangeAt(0);
+      var r = range.getBoundingClientRect();
       if (!r.width && !r.height) { hideSel(); return; }
+      savedRange = range.cloneRange();
       bar.classList.add('on');
       var w = bar.offsetWidth || 220, h = bar.offsetHeight || 44;
+
+      if (TOUCH) {
+        /* 停在畫面底部，不要黏著選取範圍跑。
+           iOS 自己的「拷貝／查詢」選單會依剩餘空間自行決定放上面或下面，
+           沒有哪一側是安全的 —— 唯一不會撞到的方法就是離它遠一點。
+           用 visualViewport 才能停在鍵盤上方。 */
+        var vv = window.visualViewport;
+        var bottom = vv ? (vv.offsetTop + vv.height) : innerHeight;
+        bar.style.left = '50%';
+        bar.style.transform = 'translateX(-50%)';
+        bar.style.top = Math.max(8, bottom - h - 12) + 'px';
+        return;
+      }
+
+      bar.style.transform = '';
       var x = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2));
-      /* 觸控裝置優先放在選取範圍「下方」——
-         iOS 自己的「拷貝／查詢」選單會蓋在上方，放上面會被壓住 */
-      var below = r.bottom + 12, above = r.top - h - 12;
-      var y = TOUCH
-        ? (below + h <= innerHeight - 8 ? below : Math.max(8, above))
-        : (above >= 8 ? above : Math.min(innerHeight - h - 8, below));
+      var above = r.top - h - 12, below = r.bottom + 12;
+      var y = above >= 8 ? above : Math.min(innerHeight - h - 8, below);
       bar.style.left = x + 'px';
       bar.style.top = Math.max(8, y) + 'px';
     }
@@ -1153,6 +1181,14 @@
     document.addEventListener('keyup', function (e) {
       if (e.shiftKey || /^Arrow/.test(e.key)) recheck(0);
     });
+    /* 鍵盤彈出／收起、轉向時可視範圍會變，停在底部的色條要跟著移動 */
+    if (window.visualViewport) {
+      ['resize', 'scroll'].forEach(function (ev) {
+        window.visualViewport.addEventListener(ev, function () {
+          if (bar.classList.contains('on')) recheck(0);
+        });
+      });
+    }
     /* 切到畫筆之後就不該再浮著擋畫面 */
     var prevToolChange = Ink.onToolChange;
     Ink.onToolChange = function () {
