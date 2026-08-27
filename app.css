@@ -329,7 +329,11 @@ mark.cov{background:#FFE9A8;color:inherit;border-radius:3px;padding:0 1px;}
 /* ============ 觸控裝置（iPad / iPhone） ============ */
 
 /* 擋掉手指作畫時，手指手勢要還給瀏覽器去捲動、縮放 */
-body.pen-only .block .ink{touch-action:pan-y pinch-zoom;}
+/* 畫布一律 touch-action:none。
+   曾經在手掌防誤觸開啟時改成 pan-y，想讓手指還能捲頁面 ——
+   但 touch-action 對「觸控筆」一樣有效，Safari 會把筆畫當成捲動手勢
+   直接取消掉，變成筆完全不能寫。
+   手指捲動改在 ink.js 裡自己做。 */
 
 /* 手機／平板：側欄的開關按鈕與遮罩 */
 #btnSide{display:none;}

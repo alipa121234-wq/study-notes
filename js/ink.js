@@ -212,7 +212,11 @@
 
   /* ---------- 綁定畫布 ---------- */
   Ink.attach = function (cv, block) {
+    /* 從資料庫還原回來的區塊若少了 strokes，第一筆 push 就會拋例外，
+       畫面上看起來就是「這一塊不能畫」。 */
+    if (!Array.isArray(block.strokes)) block.strokes = [];
     var drawing = false, curStroke = null, erased = null, pid = null;
+    var pan = null;              // 手指捲動用（見 pointerdown 的說明）
 
     function pos(e) {
       var r = cv.getBoundingClientRect();
@@ -229,7 +233,16 @@
         localStorage.setItem('sn_sawpen', '1');
         Ink.onToolChange();
       }
-      if (e.pointerType === 'touch' && Ink.fingerBlocked()) return;
+      if (e.pointerType === 'touch' && Ink.fingerBlocked()) {
+        /* 手指不畫，改成捲動。畫布必須維持 touch-action:none —— 否則瀏覽器
+           會連觸控筆的筆畫都當成捲動手勢攔走，所以捲動只能自己實作。 */
+        var sc = cv.closest('#pagewrap');
+        if (sc) {
+          pan = { y: e.clientY, top: sc.scrollTop, el: sc, id: e.pointerId };
+          try { cv.setPointerCapture(e.pointerId); } catch (err) { }
+        }
+        return;
+      }
       e.preventDefault();
       cv.setPointerCapture(e.pointerId); pid = e.pointerId;
       var p = pos(e);
@@ -288,6 +301,10 @@
     }
 
     cv.addEventListener('pointermove', function (e) {
+      if (pan && e.pointerId === pan.id) {
+        pan.el.scrollTop = pan.top - (e.clientY - pan.y);
+        return;
+      }
       if (!drawing || e.pointerId !== pid) return;
       e.preventDefault();
 
@@ -319,6 +336,7 @@
     });
 
     function finish(e) {
+      if (pan && (!e || e.pointerId === pan.id)) pan = null;
       if (!drawing) return;
       drawing = false; pid = null;
       if (Ink.mode === 'eraser') {
