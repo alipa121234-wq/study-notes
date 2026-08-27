@@ -1206,6 +1206,49 @@
     };
   }
 
+  /* ============================================================
+     診斷：iPad 上的問題在 NB 重現不出來，需要真機的數據
+     ============================================================ */
+  var evLog = [];
+  function logEv(e) {
+    var last = evLog[evLog.length - 1];
+    if (e.type === 'pointermove') {
+      /* move 太多，只累加次數不要洗版 */
+      if (last && last.t === 'move' && last.pt === e.pointerType) { last.n++; return; }
+      evLog.push({ t: 'move', pt: e.pointerType, n: 1 });
+    } else {
+      evLog.push({ t: e.type.replace('pointer', ''), pt: e.pointerType, n: 0 });
+    }
+    if (evLog.length > 14) evLog.shift();
+  }
+  ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'].forEach(function (t) {
+    document.addEventListener(t, function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains('ink')) logEv(e);
+    }, true);
+  });
+
+  function diagText() {
+    var cv = $('#blocks canvas.ink');
+    var ta = cv ? getComputedStyle(cv).touchAction : '(沒有畫布)';
+    var pe = cv ? getComputedStyle(cv).pointerEvents : '-';
+    var L = evLog.map(function (x) {
+      return '  ' + x.t + (x.n > 1 ? ' ×' + x.n : '') + '  ' + (x.pt || '?');
+    }).join('\n') || '  （還沒有事件 —— 請先在畫布上寫一筆再打開）';
+    return [
+      '模式: ' + Ink.mode,
+      '手掌防誤觸: ' + (Ink.fingerBlocked() ? '開（只有筆能畫）' : '關（手指也能畫）'),
+      '  penOnly=' + Ink.penOnly + '  sawPen=' + Ink.sawPen,
+      '畫布 touch-action: ' + ta,
+      '畫布 pointer-events: ' + pe,
+      '螢幕: ' + innerWidth + '×' + innerHeight + '  DPR=' + (devicePixelRatio || 1) +
+      '  觸控點=' + (navigator.maxTouchPoints || 0),
+      'UA: ' + navigator.userAgent.slice(0, 90),
+      '',
+      '最近在畫布上的指標事件：',
+      L
+    ].join('\n');
+  }
+
   /* 跟瀏覽器要求「不要自動清掉」。iOS Safari 網站放 7 天沒開就會把
      IndexedDB 清掉，加到主畫面 + 這個要求才留得住。 */
   function keepStorage() {
@@ -2009,6 +2052,15 @@
           fr.readAsText(f);
         };
         inp.click();
+      }),
+      btn('🐞 診斷資訊', '', function () {
+        openModal('🐞 診斷資訊',
+          '<p style="font-size:12.5px;color:#8A8680">先在畫布上用筆和手指各寫一筆，' +
+          '再回來打開這裡，然後把整個畫面截圖給我。</p>' +
+          '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;' +
+          'line-height:1.7;background:#F7F4EF;border-radius:10px;padding:12px;margin:0">' +
+          esc(diagText()) + '</pre>',
+          [btn('關閉', 'btn-primary', closeModal)]);
       })
     ]);
   });
