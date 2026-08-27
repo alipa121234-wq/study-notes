@@ -1,0 +1,226 @@
+/* ============================================================
+   editor.js — 文字區塊的選取標記（螢光筆 / 字色）與語音插入
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  var Editor = {};
+
+  function editableRoot(node) {
+    while (node && node !== document.body) {
+      if (node.nodeType === 1 && node.classList && node.classList.contains('content') &&
+        node.getAttribute('contenteditable') === 'true') return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  Editor.currentRoot = function () {
+    var sel = global.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    return editableRoot(sel.getRangeAt(0).startContainer);
+  };
+
+  Editor.selectionText = function () {
+    var sel = global.getSelection();
+    return sel && sel.rangeCount ? sel.toString() : '';
+  };
+
+  /* ---------- 取出 range 內的文字節點，並在邊界切開 ---------- */
+  /* 會先把選取範圍兩端的空白／換行修掉，避免螢光筆連換行一起包進去 */
+  function textNodesInRange(range, root) {
+    var out = [];
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var n;
+    while ((n = walker.nextNode())) {
+      if (!n.nodeValue.length) continue;
+      if (range.intersectsNode(n)) out.push(n);
+    }
+
+    var picked = [];
+    out.forEach(function (n) {
+      var s = (n === range.startContainer) ? range.startOffset : 0;
+      var e = (n === range.endContainer) ? range.endOffset : n.nodeValue.length;
+      if (e <= s) return;
+      picked.push({ node: n, s: s, e: e });
+    });
+
+    /* 兩端整段都是空白的節點丟掉，再切掉首尾節點的前後空白 */
+    function blank(p) { return !p.node.nodeValue.slice(p.s, p.e).trim(); }
+    while (picked.length && blank(picked[0])) picked.shift();
+    while (picked.length && blank(picked[picked.length - 1])) picked.pop();
+    if (picked.length) {
+      var f = picked[0], fv = f.node.nodeValue.slice(f.s, f.e);
+      f.s += fv.length - fv.replace(/^\s+/, '').length;
+      var l = picked[picked.length - 1], lv = l.node.nodeValue.slice(l.s, l.e);
+      l.e -= lv.length - lv.replace(/\s+$/, '').length;
+    }
+
+    var res = [];
+    picked.forEach(function (p) {
+      var node = p.node;
+      if (p.e < node.nodeValue.length) node.splitText(p.e);
+      if (p.s > 0) node = node.splitText(p.s);
+      res.push(node);
+    });
+    return res;
+  }
+
+  /* ---------- 把文字節點從 inline 祖先中「獨立」出來 ---------- */
+  /* 只能穿過 inline 元素。碰到 <div>/<p>/<li> 這種區塊元素一定要停下來，
+     否則會把整行的 <div> 從中間剖成兩個，畫面上就多出一行，
+     而且螢光筆的 <span> 會包住區塊元素，變成一條細長條而不是蓋在字上面。 */
+  var INLINE_TAGS = /^(SPAN|B|I|U|S|EM|STRONG|MARK|SMALL|SUB|SUP|FONT|A|CODE|ABBR|LABEL)$/;
+
+  function isolate(textNode, root) {
+    var node = textNode, parent = node.parentNode;
+    while (parent && parent !== root && parent.nodeType === 1 &&
+      INLINE_TAGS.test(parent.tagName)) {
+      if (node.previousSibling) {
+        var left = parent.cloneNode(false);
+        while (parent.firstChild && parent.firstChild !== node) left.appendChild(parent.firstChild);
+        parent.parentNode.insertBefore(left, parent);
+      }
+      if (node.nextSibling) {
+        var right = parent.cloneNode(false);
+        while (node.nextSibling) right.appendChild(node.nextSibling);
+        parent.parentNode.insertBefore(right, parent.nextSibling);
+      }
+      node = parent;
+      parent = parent.parentNode;
+    }
+    return node;
+  }
+
+  function stripKind(el, kind) {
+    var re = kind === 'hl' ? /^hl(-\d)?$/ : /^fc(-\d)?$/;
+    var list = [el].concat(el.nodeType === 1 ? Array.prototype.slice.call(el.querySelectorAll('*')) : []);
+    list.forEach(function (e) {
+      if (e.nodeType !== 1 || !e.classList) return;
+      Array.prototype.slice.call(e.classList).forEach(function (c) { if (re.test(c)) e.classList.remove(c); });
+      if (e.tagName === 'SPAN' && !e.className) unwrap(e);
+    });
+  }
+
+  function unwrap(el) {
+    var p = el.parentNode;
+    if (!p) return;
+    while (el.firstChild) p.insertBefore(el.firstChild, el);
+    p.removeChild(el);
+  }
+
+  function cleanup(root) {
+    Array.prototype.slice.call(root.querySelectorAll('span')).forEach(function (s) {
+      if (!s.textContent.length && !s.querySelector('br,img')) s.parentNode && s.parentNode.removeChild(s);
+      else if (!s.className) unwrap(s);
+    });
+    root.normalize();
+  }
+
+  /**
+   * 套用標記
+   * @param kind 'hl' 螢光筆 | 'fc' 字色
+   * @param idx  1~5 ；0 = 清除該類標記
+   */
+  Editor.mark = function (kind, idx) {
+    var sel = global.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return false;
+    var range = sel.getRangeAt(0);
+    var root = editableRoot(range.startContainer);
+    if (!root) return false;
+
+    var nodes = textNodesInRange(range, root);
+    if (!nodes.length) return false;
+
+    var wrapped = [];
+    nodes.forEach(function (tn) {
+      var top = isolate(tn, root);
+      if (top.nodeType === 1) {
+        stripKind(top, kind);
+        // 舊標記被剝乾淨時 stripKind 會把整個 span 拆掉，top 就脫離 DOM 了，
+        // 這時要改用文字節點本身，否則 insertBefore 會炸掉（換色會失敗）
+        if (!top.parentNode) top = tn;
+      }
+      if (!top.parentNode) return;
+      if (!idx) { wrapped.push(top); return; }
+      var span = document.createElement('span');
+      span.className = kind + ' ' + kind + '-' + idx;
+      top.parentNode.insertBefore(span, top);
+      span.appendChild(top);
+      wrapped.push(span);
+    });
+    if (!wrapped.length) return false;
+
+    cleanup(root);
+
+    // 重新選回原本範圍
+    try {
+      var r = document.createRange();
+      var first = wrapped[0], last = wrapped[wrapped.length - 1];
+      if (first.parentNode && last.parentNode) {
+        r.setStartBefore(first); r.setEndAfter(last);
+        sel.removeAllRanges(); sel.addRange(r);
+      }
+    } catch (e) { /* ignore */ }
+    return true;
+  };
+
+  Editor.clearMarks = function () {
+    var ok1 = Editor.mark('hl', 0);
+    var ok2 = Editor.mark('fc', 0);
+    return ok1 || ok2;
+  };
+
+  /* ---------- 在游標處插入文字（語音用） ---------- */
+  Editor.insertTextAt = function (root, text) {
+    if (!root || !text) return;
+    root.focus();
+    var sel = global.getSelection();
+    var range = null;
+    if (sel && sel.rangeCount) {
+      var r = sel.getRangeAt(0);
+      if (root.contains(r.startContainer)) range = r;
+    }
+    if (!range) {
+      range = document.createRange();
+      range.selectNodeContents(root);
+      range.collapse(false);
+    }
+    range.deleteContents();
+    var frag = document.createDocumentFragment();
+    var parts = String(text).split('\n');
+    parts.forEach(function (p, i) {
+      if (i) frag.appendChild(document.createElement('br'));
+      if (p) frag.appendChild(document.createTextNode(p));
+    });
+    var last = frag.lastChild;
+    range.insertNode(frag);
+    if (last) { range.setStartAfter(last); range.collapse(true); }
+    sel.removeAllRanges();
+    sel.addRange(range);
+    root.scrollIntoView({ block: 'nearest' });
+  };
+
+  /* ---------- HTML → DOM，換行正規化成 \n 文字節點 ---------- */
+  /* 用 DOM 走訪，不用字串取代：<div> 開標籤也要換行，且不會漏掉巢狀結構 */
+  Editor.htmlToDom = function (html) {
+    var d = document.createElement('div');
+    d.innerHTML = html || '';
+    Array.prototype.slice.call(d.querySelectorAll('br')).forEach(function (br) {
+      br.parentNode.replaceChild(document.createTextNode('\n'), br);
+    });
+    Array.prototype.slice.call(d.querySelectorAll('div,p,li')).forEach(function (el) {
+      el.parentNode.insertBefore(document.createTextNode('\n'), el);
+      el.appendChild(document.createTextNode('\n'));
+    });
+    return d;
+  };
+
+  /* ---------- 純文字（保留換行） ---------- */
+  Editor.htmlToText = function (html) {
+    return Editor.htmlToDom(html).textContent
+      .replace(/\u00A0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  };
+
+  global.Editor = Editor;
+})(window);

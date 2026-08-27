@@ -1,0 +1,10 @@
+# 測試或除錯時暫時丟進來的檔案
+_*.png
+_*.json
+*.tmp
+
+# Windows / 編輯器
+Thumbs.db
+desktop.ini
+.vscode/
+__pycache__/

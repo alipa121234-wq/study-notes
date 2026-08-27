@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<!-- viewport-fit=cover：iPhone 瀏海／底部橫條的安全區要自己處理
+     maximum-scale 不設限，畫筆註記時要能放大看細節 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>讀書筆記 × 考題產生器</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#FAF7F2">
+<!-- iOS 加到主畫面後才會全螢幕，而且資料才不會被 Safari 在 7 天後清掉 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="讀書筆記">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%23FAF7F2'/%3E%3Ctext x='256' y='368' font-size='300' text-anchor='middle'%3E%F0%9F%93%9A%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.92em' font-size='92'>📚</text></svg>">
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="mode-select">
+
+<div id="shell">
+
+  <!-- ============ 側欄：筆記列表 ============ -->
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="app-title"><span class="emoji">📚</span> 讀書筆記</div>
+      <button class="btn btn-primary btn-sm" id="btnNewNote">＋ 新筆記</button>
+    </div>
+    <input id="searchBox" class="search" type="search" placeholder="搜尋筆記…">
+    <div class="side-sub">
+      <span>資料夾</span>
+      <button class="btn btn-ghost btn-sm" id="btnNewFolder" title="新增資料夾">＋ 資料夾</button>
+    </div>
+    <div id="noteList" class="note-list"></div>
+    <div class="side-foot">
+      <button class="btn btn-sm" id="btnReviewAll">🧠 全部複習</button>
+      <button class="btn btn-sm btn-ghost" id="btnBackup">備份/還原</button>
+      <!-- 加到主畫面之後沒有網址列，iOS 也停用下拉重新整理，
+           所以要自己給一個重新載入的入口 -->
+      <button class="btn btn-sm btn-ghost" id="btnReload" title="重新載入（取得最新版程式）">⟳</button>
+    </div>
+  </aside>
+
+  <!-- ============ 主區 ============ -->
+  <main id="main">
+
+    <div id="toolbar">
+      <!-- 手機／平板：叫出側欄 -->
+      <button class="btn btn-sm" id="btnSide" title="筆記列表">☰</button>
+
+      <!-- 模式 -->
+      <div class="tgroup" role="group" aria-label="工具">
+        <button class="tool" data-mode="select" title="選取 / 打字 (V)">🖱️<span class="k">V</span></button>
+        <button class="tool" data-mode="pen"    title="畫筆 (B)">🖊️<span class="k">B</span></button>
+        <button class="tool" data-mode="hl"     title="螢光筆 (H)">🖍️<span class="k">H</span></button>
+        <button class="tool" data-mode="eraser" title="橡皮擦 (E)，按住 X 可暫時使用">🧽<span class="k">E</span></button>
+      </div>
+
+      <div class="sep"></div>
+
+      <!-- 顏色 -->
+      <div class="tgroup" id="swatches" aria-label="顏色"></div>
+
+      <div class="sep"></div>
+
+      <!-- 粗細 -->
+      <div class="tgroup size-group">
+        <button class="btn btn-ghost btn-sm" id="btnThin" title="變細 [">［</button>
+        <div id="sizeDot" title="Ctrl+滾輪 無段調整"><i></i></div>
+        <button class="btn btn-ghost btn-sm" id="btnThick" title="變粗 ]">］</button>
+      </div>
+
+      <div class="sep"></div>
+
+      <!-- 復原 / 重做（只作用在筆跡） -->
+      <div class="tgroup">
+        <button class="tool" id="btnUndo" title="復原上一筆 (Ctrl+Z)">↶</button>
+        <button class="tool" id="btnRedo" title="重做 (Ctrl+Shift+Z)">↷</button>
+      </div>
+
+      <div class="sep"></div>
+
+      <!-- 插入 -->
+      <div class="tgroup">
+        <button class="btn btn-sm" id="btnAddText" title="加入文字段落，可以打字">＋文字</button>
+        <button class="btn btn-sm" id="btnAddImage" title="插入圖片（也可直接 Ctrl+V 貼截圖）">＋圖片</button>
+        <button class="btn btn-sm" id="btnAddSketch" title="加入手寫空白區（只能用畫筆寫，不能打字）">＋手寫區</button>
+      </div>
+
+      <div class="spacer"></div>
+
+      <button class="btn btn-sm" id="btnPenOnly" title="手指要不要能畫">✏️</button>
+      <button class="btn btn-sm" id="btnMic" title="語音輸入 (F2)">🎙️ 語音</button>
+      <button class="btn btn-sm" id="btnMakeQuiz" title="從這份筆記產生考題">📝 產生考題</button>
+      <button class="btn btn-sm btn-primary" id="btnReview" title="複習這份筆記的題目">🧠 複習</button>
+    </div>
+
+    <!-- 標記色的語意提示 -->
+    <div id="legend">
+      <span class="lg-title">螢光筆語意（選取文字後按 <kbd>Alt</kbd>+<kbd>1~5</kbd>）：</span>
+      <span class="lg hl-1">1 黃＝挖空填空</span>
+      <span class="lg hl-2">2 綠＝名詞解釋</span>
+      <span class="lg hl-3">3 粉＝易錯重點</span>
+      <span class="lg hl-4">4 藍＝整句問答</span>
+      <span class="lg hl-5">5 紫＝只標記不出題</span>
+      <span class="lg-more"><kbd>Alt</kbd>+<kbd>Shift</kbd>+數字＝改字色 · <kbd>Alt</kbd>+<kbd>Q</kbd>＝手動出題 · <kbd>Alt</kbd>+<kbd>0</kbd>＝清除</span>
+    </div>
+
+    <div id="pagewrap">
+      <div id="page">
+        <input id="noteTitle" class="note-title" placeholder="未命名筆記">
+        <div id="blocks"></div>
+        <div class="page-hint">在這裡 <b>Ctrl+V</b> 貼上截圖，或把圖片檔拖進來 · 按 <b>B</b> 開始畫筆註記</div>
+      </div>
+    </div>
+
+    <div id="statusbar">
+      <span id="saveState">已儲存</span>
+      <span id="modeState"></span>
+      <span class="spacer"></span>
+      <span class="hintline">Tab＝上一支筆 · 按住空白鍵＝色盤輪盤 · Ctrl+Z＝復原筆跡</span>
+    </div>
+  </main>
+</div>
+
+<!-- 輪盤選單 -->
+<div id="radial" hidden><canvas id="radialCv" width="260" height="260"></canvas></div>
+
+<!-- 語音狀態列 -->
+<div id="voicebar" hidden>
+  <span class="dot"></span>
+  <span id="voiceText">聆聽中…</span>
+  <button class="btn btn-sm" id="btnVoiceStop">停止 (F2)</button>
+</div>
+
+<!-- 手機／平板：側欄打開時的遮罩，點一下關掉 -->
+<div id="sideMask"></div>
+
+<!-- 選取文字後浮出來的螢光筆列（沒有實體鍵盤時用） -->
+<div id="selbar"></div>
+
+<!-- 一般彈窗 -->
+<div id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="modalTitle"></h3><button class="btn btn-ghost btn-sm" id="modalClose">✕</button></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot" id="modalFoot"></div>
+  </div>
+</div>
+
+<input type="file" id="filePicker" accept="image/*" multiple hidden>
+
+<script src="js/store.js"></script>
+<script src="js/ink.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/voice.js"></script>
+<script src="js/quiz.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
