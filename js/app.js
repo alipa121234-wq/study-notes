@@ -1038,8 +1038,13 @@
        等於沒辦法載入新版程式。存好檔再重新載入。 */
     $('#btnReload').addEventListener('click', function () {
       if (saveTimer) clearTimeout(saveTimer);
-      save().then(function () { location.reload(); },
-        function () { location.reload(); });
+      /* 一定要換一個沒看過的網址。單純 reload() 會拿到快取裡的 index.html
+         （GitHub Pages 叫瀏覽器存十分鐘），裡面還是指向舊版的 JS，
+         看起來就像「明明更新了卻沒生效」。 */
+      var go = function () {
+        location.replace(location.pathname + '?r=' + Date.now());
+      };
+      save().then(go, go);
     });
 
     $('#btnPenOnly').addEventListener('click', function () {
