@@ -218,6 +218,7 @@
   }
 
   Ink.render = function (cv, block) {
+    var t0 = (global.performance || Date).now();
     var rect = cv.getBoundingClientRect();
     var w = Math.max(1, Math.round(rect.width));
     var h = Math.max(1, Math.round(rect.height));
@@ -230,6 +231,9 @@
     ctx.clearRect(0, 0, w, h);
     (block.strokes || []).forEach(function (st) { paintStroke(ctx, block, st, w, h); });
     cv.__w = w; cv.__h = h;
+    /* 記下這塊畫布整塊重畫要多久，讓「可有可無」的重畫自己知道該不該做。
+       寫死筆畫數當門檻沒有意義 —— iPad 跟桌機差好幾倍。 */
+    cv.__renderMs = (global.performance || Date).now() - t0;
   };
 
   /* ---------- 橡皮擦命中判定 ---------- */
@@ -302,7 +306,12 @@
           pts: [pt(p, e)]
         };
         block.strokes.push(curStroke);
-        Ink.render(cv, block);
+        /* 這裡以前是整塊重畫。但畫布上已經有的筆跡不會因為多了一筆而改變，
+           只要把新的這一點疊上去就好。整塊重畫的成本隨筆畫數線性成長
+           （實測 648 筆要 9ms、最慢 22ms，iPad 上還要再慢好幾倍），
+           而且是「每次筆落下」都付一次 —— 畫圈圈時筆不斷起落，
+           畫越滿停頓越明顯。 */
+        drawHead();
       }
     });
 
@@ -325,7 +334,9 @@
           block.strokes.splice(i, 1);
         }
       }
-      Ink.render(cv, block);
+      /* 擦掉筆跡一定得整塊重畫，但一個影格重畫一次就夠 —— 原本是
+         每個 pointermove 都重畫，擦大片時跟落筆一樣會卡。 */
+      scheduleFull();
     }
 
     /* 螢光筆是一整條半透明路徑，逐段補畫會在接縫處疊出深色，
@@ -345,6 +356,12 @@
       var dpr = Math.min(2, global.devicePixelRatio || 1);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       paintStroke(ctx, block, curStroke, w, h, idx, true);
+    }
+
+    /* 落筆的第一點：疊一個點上去就好，不必整塊重來。 */
+    function drawHead() {
+      if (!cv.__w || !cv.__h) { Ink.render(cv, block); return; }   // 還沒量過尺寸
+      appendFrom(1);
     }
 
     cv.addEventListener('pointermove', function (e) {
@@ -398,10 +415,10 @@
         else {
           pushHistory({ kind: 'add', blockId: block.id, stroke: curStroke });
           /* 筆抬起來才知道結尾在哪，重畫一次讓收筆的漸細長出來。
-             但重畫是整塊重來，成本隨筆畫數線性成長（實測 540 筆要 13ms，
-             已經吃掉一整幀）。收筆漸細只是好看，畫得很滿時就不值得為它
-             讓每次抬筆都頓一下 —— 超過門檻就放棄這個效果。 */
-          if (curStroke.tool !== 'hl' && block.strokes.length <= 150) Ink.render(cv, block);
+             但重畫是整塊重來，成本隨筆畫數線性成長。收筆漸細只是好看，
+             不值得為它讓每次抬筆都頓一下 —— 上一次重畫超過 4ms 就放棄，
+             以這台裝置的實測速度為準。 */
+          if (curStroke.tool !== 'hl' && !(cv.__renderMs > 4)) Ink.render(cv, block);
         }
         curStroke = null;
       }
