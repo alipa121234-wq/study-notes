@@ -202,6 +202,10 @@
     var composing = false;
 
     function noteCaret() {
+      /* 組字（注音、拼音…）進行中不要重記。組字時游標會一直動，
+         再記一次就會把「已經變長」的長度當成原本的長度，
+         結算時差值變成 0，等於整個修正失效。 */
+      if (composing) return;
       var root = Editor.currentRoot();
       var sel = global.getSelection();
       if (!root || !sel || !sel.rangeCount || !sel.isCollapsed) { watch = null; return; }
@@ -212,9 +216,10 @@
         ? { el: m, len: m.textContent.length } : null;
     }
 
-    function pullOut() {
-      if (composing || !watch) return;
-      var m = watch.el, before = watch.len;
+    function pullOut(w) {
+      w = w || watch;
+      if (composing || !w) return;
+      var m = w.el, before = w.len;
       watch = null;
       if (!m.parentNode) return;
       var extra = m.textContent.length - before;
@@ -239,11 +244,17 @@
     }
 
     document.addEventListener('selectionchange', noteCaret);
-    document.addEventListener('input', pullOut, true);
-    document.addEventListener('compositionstart', function () { composing = true; }, true);
+    document.addEventListener('input', function () { pullOut(); }, true);
+    document.addEventListener('compositionstart', function () {
+      if (!watch) noteCaret();       // 萬一 selectionchange 沒先觸發，這裡補記
+      composing = true;
+    }, true);
     document.addEventListener('compositionend', function () {
+      /* 這裡要「當場」把記錄抓住再放行。組字結束後瀏覽器會再觸發一次
+         selectionchange，若等到下一輪才讀，記錄早就被覆蓋成新長度了。 */
+      var w = watch;
       composing = false;
-      setTimeout(pullOut, 0);
+      setTimeout(function () { pullOut(w); }, 0);
     }, true);
   };
 
