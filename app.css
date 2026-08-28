@@ -417,3 +417,9 @@ body{
   -webkit-user-select:text; user-select:text;
   -webkit-touch-callout:default;
 }
+
+/* 剛貼上圖片時，把圖說欄標出來 —— 出考題靠的是它，不是圖片本身 */
+.cap.await-cap{
+  background:var(--accent-soft);border-radius:6px;
+  box-shadow:0 0 0 2px var(--accent);
+}

@@ -120,6 +120,21 @@
     Ink.onToolChange();
   };
 
+  /**
+   * 筆跡畫布的繪圖環境。
+   * desynchronized 讓畫布繞過合成器直接送顯示，可以少掉一點延遲 ——
+   * 網頁拿不到 Apple Pencil 的預測筆觸，能省的延遲都得省。
+   * 選項只在「第一次」取得時有效，所以一律走這裡。
+   */
+  function ctx2d(cv) {
+    if (!cv.__ctx) {
+      try { cv.__ctx = cv.getContext('2d', { desynchronized: true }); }
+      catch (e) { cv.__ctx = cv.getContext('2d'); }
+      if (!cv.__ctx) cv.__ctx = cv.getContext('2d');
+    }
+    return cv.__ctx;
+  }
+
   /* ---------- 座標換算 ---------- */
   function yAbs(block) { return block.type === 'text'; }
 
@@ -174,7 +189,13 @@
         var p3 = toPx(block, q3[0], q3[1], w, h);
         var pr = pts[j][2];
         if (!pr && pr !== 0) pr = .5;
-        ctx.lineWidth = st.size * (0.55 + 0.9 * pr);
+        /* 再依「移動速度」微調粗細：畫得快 -> 細，慢 -> 粗，
+           起筆收筆再收窄一點。真的筆本來就這樣，少了這個會像等寬的簽字筆。 */
+        var step = Math.abs(p2[0] - p1[0]) + Math.abs(p2[1] - p1[1]);
+        var fast = Math.min(1, step / (st.size * 6));
+        var edge = Math.min(j, pts.length - j) / 3;      // 前後三段漸收
+        var taper = edge < 1 ? (0.55 + 0.45 * edge) : 1;
+        ctx.lineWidth = st.size * (0.55 + 0.9 * pr) * (1 - 0.3 * fast) * taper;
         ctx.beginPath();
         ctx.moveTo(p1[0], p1[1]);
         ctx.bezierCurveTo(
@@ -202,7 +223,7 @@
     if (cv.width !== w * dpr || cv.height !== h * dpr) {
       cv.width = w * dpr; cv.height = h * dpr;
     }
-    var ctx = cv.getContext('2d');
+    var ctx = ctx2d(cv);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     (block.strokes || []).forEach(function (st) { paintStroke(ctx, block, st, w, h); });
@@ -313,7 +334,7 @@
     function appendFrom(idx) {
       var w = cv.__w, h = cv.__h;
       if (!w || !h) { Ink.render(cv, block); return; }
-      var ctx = cv.getContext('2d');
+      var ctx = ctx2d(cv);
       var dpr = Math.min(2, global.devicePixelRatio || 1);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       paintStroke(ctx, block, curStroke, w, h, idx);

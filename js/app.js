@@ -1013,7 +1013,18 @@
     chain.then(function () {
       markDirty();
       var last = $('#blocks').lastElementChild;
-      if (last) last.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (!last) return;
+      last.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      /* 圖片本身出不了考題，圖說才可以 —— 貼完直接把游標放進去，
+         不然多半就忘了寫，那張圖等於白貼。 */
+      var cap = $('.cap', last);
+      if (cap) {
+        setTimeout(function () {
+          cap.focus();
+          cap.classList.add('await-cap');
+          setTimeout(function () { cap.classList.remove('await-cap'); }, 2500);
+        }, 350);
+      }
     });
   }
 

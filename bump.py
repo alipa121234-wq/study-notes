@@ -29,13 +29,15 @@ def main():
 
     new, n = ASSETS.subn(r'\g<1>\g<2>?v=' + stamp + r'\g<3>', html)
     if not n:
-        print('[WARN] 沒有找到任何 CSS/JS 標籤，index.html 是不是改過了？')
+        print('[WARN] no CSS/JS tag found - has index.html been changed?')
         return 1
 
     if new != html:
         with io.open('index.html', 'w', encoding='utf-8', newline='') as f:
             f.write(new)
-    print('已蓋上版本戳記 %s（%d 個檔案）' % (stamp, n))
+    # 訊息保持純 ASCII：從 Git Bash 跑的時候 stdout 是 cp1252，
+    # 印中文會炸成 UnicodeEncodeError，讓整支腳本回傳 1。
+    print('stamped %s (%d files)' % (stamp, n))
     return 0
 
 
