@@ -486,6 +486,8 @@
         markDirty();
       });
       content.addEventListener('focus', function () { selectedBlockId = b.id; });
+      /* 標了顏色之後接著打字，不要把新字也塗上同一個顏色 */
+      Editor.keepMarksClosed(content);
       /* 對 OCR 產生的 ______ 點兩下 -> 直接填答案，填完自動上螢光筆 */
       content.addEventListener('dblclick', function (e) { fillBlank(e, content, b); });
 
@@ -1137,6 +1139,43 @@
       if (innerWidth <= 820) closeSide();
     });
 
+    /* 用觸控筆寫字時的小鍵盤。
+       手寫轉文字沒辦法輸入退格、空白、換行，為了刪一個字要叫出整個
+       系統鍵盤太麻煩，所以在旁邊放三顆就好。 */
+    var pad = $('#penpad');
+    function padAct(k) {
+      var root = Editor.currentRoot();
+      if (!root) return;
+      root.focus();
+      if (k === 'back') document.execCommand('delete');
+      else if (k === 'space') document.execCommand('insertText', false, ' ');
+      else document.execCommand('insertLineBreak');
+      root.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    Array.prototype.forEach.call(pad.querySelectorAll('button'), function (b) {
+      onTap(b, function () { padAct(b.dataset.k); });
+    });
+
+    function syncPad() {
+      var root = Editor.currentRoot();
+      var on = TOUCH && Ink.mode === 'select' && !!root &&
+        document.activeElement && document.activeElement.isContentEditable;
+      pad.hidden = !on;
+      if (!on) return;
+      /* 停在鍵盤上方；沒有鍵盤時就貼著畫面底部 */
+      var vv = window.visualViewport;
+      var bottom = vv ? (vv.offsetTop + vv.height) : innerHeight;
+      pad.style.top = Math.max(8, bottom - pad.offsetHeight - 12) + 'px';
+    }
+    ['focusin', 'focusout', 'pointerup', 'touchend'].forEach(function (ev) {
+      document.addEventListener(ev, function () { setTimeout(syncPad, 60); });
+    });
+    if (window.visualViewport) {
+      ['resize', 'scroll'].forEach(function (ev) {
+        window.visualViewport.addEventListener(ev, syncPad);
+      });
+    }
+
     /* 沒有實體鍵盤就按不出 Alt+1~5，改成選取文字後浮一排顏色出來 */
     var bar = $('#selbar');
     var savedRange = null;      // iOS 上點按鈕會把選取收掉，先存起來待會還原
@@ -1263,6 +1302,7 @@
     Ink.onToolChange = function () {
       if (typeof prevToolChange === 'function') prevToolChange();
       if (Ink.mode !== 'select') hideSel();
+      syncPad();
     };
   }
 

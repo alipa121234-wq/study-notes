@@ -171,6 +171,67 @@
     return ok1 || ok2;
   };
 
+  /**
+   * 讓螢光筆／字色的標記「不會愈長愈長」。
+   * contenteditable 的預設行為是：游標停在 <span> 尾端時，接著打的字會落在
+   * span 裡面 —— 於是標了一次顏色之後，後面打的字全部被塗上同一個顏色。
+   */
+  Editor.keepMarksClosed = function (root) {
+    function markAt(node) {
+      var el = node && node.nodeType === 3 ? node.parentNode : node;
+      while (el && el !== root) {
+        if (el.classList && (el.classList.contains('hl') || el.classList.contains('fc'))) return el;
+        el = el.parentNode;
+      }
+      return null;
+    }
+    /* 游標是不是剛好停在這個標記的最尾端（後面沒有任何內容了） */
+    function atEnd(el, node, offset) {
+      if (node.nodeType === 3) { if (offset !== node.nodeValue.length) return false; }
+      else if (offset !== node.childNodes.length) return false;
+      var n = node;
+      while (n && n !== el) { if (n.nextSibling) return false; n = n.parentNode; }
+      return n === el;
+    }
+    function markToLeave() {
+      var sel = global.getSelection();
+      if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+      var r = sel.getRangeAt(0);
+      var m = markAt(r.startContainer);
+      return (m && atEnd(m, r.startContainer, r.startOffset)) ? m : null;
+    }
+    function caretTo(node, offset) {
+      var r = document.createRange();
+      r.setStart(node, offset); r.collapse(true);
+      var sel = global.getSelection();
+      sel.removeAllRanges(); sel.addRange(r);
+    }
+
+    root.addEventListener('beforeinput', function (e) {
+      if (e.inputType !== 'insertText' || !e.data) return;
+      var m = markToLeave();
+      if (!m) return;
+      e.preventDefault();
+      var tn = document.createTextNode(e.data);
+      m.parentNode.insertBefore(tn, m.nextSibling);
+      caretTo(tn, tn.length);
+      root.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    /* 注音之類的組字輸入不走 insertText，攔不到 —— 改在組字「開始之前」
+       就把游標挪到標記外面，後面組出來的字自然就不會被塗色。 */
+    root.addEventListener('compositionstart', function () {
+      var m = markToLeave();
+      if (!m) return;
+      var next = m.nextSibling;
+      if (!next || next.nodeType !== 3) {
+        next = document.createTextNode('');
+        m.parentNode.insertBefore(next, m.nextSibling);
+      }
+      caretTo(next, 0);
+    });
+  };
+
   /* ---------- 在游標處插入文字（語音用） ---------- */
   Editor.insertTextAt = function (root, text) {
     if (!root || !text) return;

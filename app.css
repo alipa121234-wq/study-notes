@@ -389,3 +389,15 @@ body.no-ocr .bar button[data-a="ocr"]{display:none;}
   background:linear-gradient(var(--line) 1px,transparent 1px) 0 27px/100% 28px;
   padding:2px 4px;
 }
+
+/* 用觸控筆寫字時的小鍵盤 —— 為了刪一個字而叫出整個系統鍵盤太麻煩 */
+#penpad{
+  position:fixed;right:16px;z-index:1140;display:flex;gap:6px;padding:7px;
+  background:#fff;border:1px solid var(--line);border-radius:14px;
+  box-shadow:0 8px 24px rgba(0,0,0,.18);
+}
+#penpad button{
+  min-width:46px;height:42px;border-radius:10px;border:1px solid var(--line);
+  background:#fff;font-size:17px;cursor:pointer;padding:0 10px;color:var(--ink);
+}
+#penpad button:active{background:var(--accent-soft);}

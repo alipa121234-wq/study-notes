@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-title" content="讀書筆記">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%23FAF7F2'/%3E%3Ctext x='256' y='368' font-size='300' text-anchor='middle'%3E%F0%9F%93%9A%3C/text%3E%3C/svg%3E">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.92em' font-size='92'>📚</text></svg>">
-<link rel="stylesheet" href="app.css?v=20260828081922">
+<link rel="stylesheet" href="app.css?v=20260828083627">
 </head>
 <body class="mode-select">
 
@@ -143,6 +143,13 @@
 <!-- 選取文字後浮出來的螢光筆列（沒有實體鍵盤時用） -->
 <div id="selbar"></div>
 
+<!-- 用觸控筆寫字時的小鍵盤：不用為了刪一個字去叫出整個鍵盤 -->
+<div id="penpad" hidden>
+  <button data-k="back" title="刪除前一個字">⌫</button>
+  <button data-k="space" title="空格">␣</button>
+  <button data-k="enter" title="換行">↵</button>
+</div>
+
 <!-- 一般彈窗 -->
 <div id="modal" hidden>
   <div class="modal-card">
@@ -154,11 +161,11 @@
 
 <input type="file" id="filePicker" accept="image/*" multiple hidden>
 
-<script src="js/store.js?v=20260828081922"></script>
-<script src="js/ink.js?v=20260828081922"></script>
-<script src="js/editor.js?v=20260828081922"></script>
-<script src="js/voice.js?v=20260828081922"></script>
-<script src="js/quiz.js?v=20260828081922"></script>
-<script src="js/app.js?v=20260828081922"></script>
+<script src="js/store.js?v=20260828083627"></script>
+<script src="js/ink.js?v=20260828083627"></script>
+<script src="js/editor.js?v=20260828083627"></script>
+<script src="js/voice.js?v=20260828083627"></script>
+<script src="js/quiz.js?v=20260828083627"></script>
+<script src="js/app.js?v=20260828083627"></script>
 </body>
 </html>
