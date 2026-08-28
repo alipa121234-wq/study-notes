@@ -150,8 +150,10 @@
    * @param startIdx 只從第幾段開始畫（畫筆專用）。
    *   畫筆是逐段畫的，補畫新的一段跟整條重畫結果一樣，
    *   所以寫字途中不必每次都把整塊畫布重來一遍。
+   * @param live 這一筆還在畫。收筆漸細要等筆抬起來才知道哪裡是結尾，
+   *   畫的當下不能套用，否則每一段都會被當成「最後一段」而縮細。
    */
-  function paintStroke(ctx, block, st, w, h, startIdx) {
+  function paintStroke(ctx, block, st, w, h, startIdx, live) {
     var pts = st.pts;
     if (!pts.length) return;
     ctx.save();
@@ -193,7 +195,7 @@
            起筆收筆再收窄一點。真的筆本來就這樣，少了這個會像等寬的簽字筆。 */
         var step = Math.abs(p2[0] - p1[0]) + Math.abs(p2[1] - p1[1]);
         var fast = Math.min(1, step / (st.size * 6));
-        var edge = Math.min(j, pts.length - j) / 3;      // 前後三段漸收
+        var edge = live ? j / 3 : Math.min(j, pts.length - j) / 3;   // 前後三段漸收
         var taper = edge < 1 ? (0.55 + 0.45 * edge) : 1;
         ctx.lineWidth = st.size * (0.55 + 0.9 * pr) * (1 - 0.3 * fast) * taper;
         ctx.beginPath();
@@ -307,7 +309,12 @@
     function pt(p, e) {
       var l = toLocal(block, p[0], p[1], p[2], p[3]);
       var pr = (e.pointerType === 'pen' && e.pressure > 0) ? e.pressure : .5;
-      return [+l[0].toFixed(4), +l[1].toFixed(2), +pr.toFixed(2)];
+      /* y 在文字區存的是像素，在畫圖區／圖片上存的是比例。
+         比例只留兩位小數等於量化到畫布高度的 1% —— 380px 高的畫布就是
+         3.8px 一階，平緩的斜線會被壓成階梯，看起來就是「一段一段」。
+         比例要跟 x 一樣留四位（0.0001×380 ≈ 0.04px）。 */
+      var y = yAbs(block) ? +l[1].toFixed(2) : +l[1].toFixed(4);
+      return [+l[0].toFixed(4), y, +pr.toFixed(2)];
     }
 
     function eraseAt(p) {
@@ -337,7 +344,7 @@
       var ctx = ctx2d(cv);
       var dpr = Math.min(2, global.devicePixelRatio || 1);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      paintStroke(ctx, block, curStroke, w, h, idx);
+      paintStroke(ctx, block, curStroke, w, h, idx, true);
     }
 
     cv.addEventListener('pointermove', function (e) {
@@ -388,7 +395,14 @@
         erased = null;
       } else if (curStroke) {
         if (curStroke.pts.length < 1) block.strokes.pop();
-        else pushHistory({ kind: 'add', blockId: block.id, stroke: curStroke });
+        else {
+          pushHistory({ kind: 'add', blockId: block.id, stroke: curStroke });
+          /* 筆抬起來才知道結尾在哪，重畫一次讓收筆的漸細長出來。
+             但重畫是整塊重來，成本隨筆畫數線性成長（實測 540 筆要 13ms，
+             已經吃掉一整幀）。收筆漸細只是好看，畫得很滿時就不值得為它
+             讓每次抬筆都頓一下 —— 超過門檻就放棄這個效果。 */
+          if (curStroke.tool !== 'hl' && block.strokes.length <= 150) Ink.render(cv, block);
+        }
         curStroke = null;
       }
       Ink.onChange();
