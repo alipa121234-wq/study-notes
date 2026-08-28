@@ -191,13 +191,18 @@
         var p3 = toPx(block, q3[0], q3[1], w, h);
         var pr = pts[j][2];
         if (!pr && pr !== 0) pr = .5;
-        /* 再依「移動速度」微調粗細：畫得快 -> 細，慢 -> 粗，
-           起筆收筆再收窄一點。真的筆本來就這樣，少了這個會像等寬的簽字筆。 */
+        /* 依筆壓和移動速度微調粗細：壓得重 -> 粗，畫得快 -> 細，
+           起筆收筆再收窄一點。真的筆本來就這樣，少了這個會像等寬的簽字筆。
+
+           但幅度要克制。原本筆壓 0.55~1.45、速度再乘 0.7~1.0，
+           最粗跟最細差到 3.8 倍 —— 同一張圖裡慢慢描的外框又黑又粗、
+           快速填的內容細成一條線，看起來像用了兩支不同的筆。
+           收成 0.81~1.12（1.4 倍）：看得出輕重，但還是同一支筆。 */
         var step = Math.abs(p2[0] - p1[0]) + Math.abs(p2[1] - p1[1]);
         var fast = Math.min(1, step / (st.size * 6));
         var edge = live ? j / 3 : Math.min(j, pts.length - j) / 3;   // 前後三段漸收
-        var taper = edge < 1 ? (0.55 + 0.45 * edge) : 1;
-        ctx.lineWidth = st.size * (0.55 + 0.9 * pr) * (1 - 0.3 * fast) * taper;
+        var taper = edge < 1 ? (0.7 + 0.3 * edge) : 1;
+        ctx.lineWidth = st.size * (0.88 + 0.24 * pr) * (1 - 0.08 * fast) * taper;
         ctx.beginPath();
         ctx.moveTo(p1[0], p1[1]);
         ctx.bezierCurveTo(
