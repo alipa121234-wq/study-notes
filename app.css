@@ -406,12 +406,14 @@ body.no-ocr .bar button[data-a="ocr"]{display:none;}
 /* iPad：手掌壓在畫面上久了會被 iOS 判定成「長按選字」，跳出
    「拷貝／查詢／翻譯」選單蓋住工具列。介面本身沒有一處需要被選取，
    所以除了真正要選字的地方（文字段落、輸入框）以外一律關掉。 */
-#sidebar, #toolbar, #legend, #statusbar, #penpad, #selbar,
-.block .bar, .page-hint, .sk-hint{
+/* 一律關掉，再挑需要的打開。只列舉「不該選的」會漏掉頁面背景和
+   區塊之間的空隙，手掌壓在那裡照樣會開始選取。 */
+body{
   -webkit-user-select:none; user-select:none;
   -webkit-touch-callout:none;
 }
-/* 這些一定要能選：螢光筆和複習作答都靠它 */
+/* 這些一定要能選：螢光筆靠選字、輸入框要能編輯、複習時要能看答案 */
 .tblock .content, input, textarea, .modal-body{
   -webkit-user-select:text; user-select:text;
+  -webkit-touch-callout:default;
 }
