@@ -54,7 +54,7 @@
   function doUndo() { Ink.undo(findBlock, rerenderCanvas); syncUndo(); }
   function doRedo() { Ink.redo(findBlock, rerenderCanvas); syncUndo(); }
 
-  /* 空的手寫區顯示提示，畫上東西後隱藏 */
+  /* 空的畫圖區顯示提示，畫上東西後隱藏 */
   function refreshHints() {
     $$('#blocks .sblock').forEach(function (el) {
       var b = findBlock(el.dataset.id);
@@ -488,6 +488,23 @@
       content.addEventListener('focus', function () { selectedBlockId = b.id; });
       /* 對 OCR 產生的 ______ 點兩下 -> 直接填答案，填完自動上螢光筆 */
       content.addEventListener('dblclick', function (e) { fillBlank(e, content, b); });
+
+      /* 文字段落也可以有格線和固定高度 —— 用觸控筆寫字時，
+         空的段落只有一行高，沒有地方下筆。 */
+      if (b.lined) content.classList.add('lined');
+      if (b.h) {
+        content.style.minHeight = b.h + 'px';
+        content.style.resize = 'vertical';
+        content.style.overflow = 'auto';
+        var th = null;
+        new ResizeObserver(function () {
+          clearTimeout(th);
+          th = setTimeout(function () {
+            var nh = Math.round(content.getBoundingClientRect().height);
+            if (nh && nh !== b.h) { b.h = nh; markDirty(); }
+          }, 300);
+        }).observe(content);
+      }
     } else if (b.type === 'image') {
       var img = document.createElement('img');
       img.src = b.src;
@@ -505,9 +522,9 @@
       content.style.overflow = 'hidden';
       var hint = document.createElement('div');
       hint.className = 'sk-hint';
-      hint.innerHTML = '✍️ <b>手寫區</b>　這一區保留原本的筆跡，<b>不會轉成文字</b><br>' +
-        '按工具列的 🖊️（或鍵盤 <b>B</b>）就能直接在這裡寫字、畫圖<br>' +
-        '<span class="sk-sub">想讓手寫「變成文字」請改用「＋文字」，在 🖱️ 選取模式下用觸控筆寫 · ' +
+      hint.innerHTML = '🎨 <b>畫圖區</b>　給算式、圖解、流程圖用，<b>保留筆跡原貌</b><br>' +
+        '按工具列的 🖊️（或鍵盤 <b>B</b>）就能直接在這裡畫<br>' +
+        '<span class="sk-sub">想寫出「文字」請按工具列的「✍️ 筆寫成字」 · ' +
         '用不到可以按右上角 🗑 刪掉 · 右下角可拖曳改高度</span>';
       content.appendChild(hint);
       var t = null;
@@ -534,7 +551,7 @@
       if (sessionStorage.getItem('sn_scribblehint')) return;
       sessionStorage.setItem('sn_scribblehint', '1');
       toast(b.type === 'sketch'
-        ? '手寫區只保留筆跡，不會變成文字。要文字請按工具列的「✍️ 筆寫成字」'
+        ? '畫圖區保留筆跡原貌，不會變成文字。要文字請按工具列的「✍️ 筆寫成字」'
         : '想把手寫變成文字嗎？按工具列的「✍️ 筆寫成字」');
     }, true);
 
@@ -545,7 +562,7 @@
     if (b.type !== 'text') {
       var cap = document.createElement('input');
       cap.className = 'cap';
-      cap.placeholder = b.type === 'image' ? '圖說（會拿來出考題，寫問句就變成看圖題）' : '這段手寫在講什麼？（會拿來出考題）';
+      cap.placeholder = b.type === 'image' ? '圖說（會拿來出考題，寫問句就變成看圖題）' : '這張圖在講什麼？（會拿來出考題）';
       cap.value = b.cap || '';
       cap.addEventListener('input', function () { b.cap = cap.value; markDirty(); });
       el.appendChild(cap);
@@ -557,6 +574,7 @@
       '<button data-a="up" title="上移">↑</button>' +
       '<button data-a="down" title="下移">↓</button>' +
       (b.type === 'image' ? '<button data-a="ocr" title="把圖片上的文字辨識成可以標記的文字">🔤</button>' : '') +
+      (b.type === 'text' ? '<button data-a="paper" title="格線與高度（用觸控筆寫字時比較好寫）">📐</button>' : '') +
       '<button data-a="clearink" title="清除這塊的筆跡">🧹</button>' +
       '<button data-a="del" title="刪除區塊">🗑</button>';
     bar.addEventListener('click', function (e) {
@@ -568,6 +586,20 @@
           { head: '把圖片上的文字辨識出來' },
           { label: '中文為主（含英文）', fn: function () { ocrBlock(b, el, 'zh-Hant-TW'); } },
           { label: '只有英文', fn: function () { ocrBlock(b, el, 'en-US'); } }
+        ]);
+        return;
+      }
+      if (a === 'paper') {
+        popup(e.target, [
+          { head: '用觸控筆寫字時的版面' },
+          {
+            label: (b.lined ? '✓ ' : '') + '顯示格線', on: !!b.lined,
+            fn: function () { b.lined = !b.lined; renderBlocks(); markDirty(); }
+          },
+          {
+            label: b.h ? '恢復自動高度' : '加高，空出書寫空間', on: !!b.h,
+            fn: function () { b.h = b.h ? 0 : 320; renderBlocks(); markDirty(); }
+          }
         ]);
         return;
       }
@@ -1063,7 +1095,7 @@
 
     /* 用觸控筆寫出「文字」的條件有兩個，而且兩個都不直覺：
          1. 必須在選取模式 —— 畫筆模式下畫布會把筆攔走
-         2. 必須寫在文字段落上 —— 手寫區是畫布，iOS 眼中沒有文字輸入框
+         2. 必須寫在文字段落上 —— 畫圖區是畫布，iOS 眼中沒有文字輸入框
        期待使用者自己選中「🖱️ 選取」這個看起來完全不像寫字的工具是不合理的，
        所以給一顆按鈕一次把兩件事都準備好。 */
     $('#btnHandwrite').addEventListener('click', function () {

@@ -381,3 +381,11 @@ body.no-ocr .bar button[data-a="ocr"]{display:none;}
   -webkit-user-select:none; user-select:none;
   -webkit-touch-callout:none;
 }
+
+/* 文字段落也能有格線（用觸控筆寫字時比較好對齊）。
+   行高必須跟格線間距一致，字才會坐在線上。 */
+.tblock .content.lined{
+  line-height:28px;
+  background:linear-gradient(var(--line) 1px,transparent 1px) 0 27px/100% 28px;
+  padding:2px 4px;
+}
