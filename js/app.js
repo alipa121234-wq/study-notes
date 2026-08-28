@@ -1371,11 +1371,45 @@
     }
     if (evLog.length > 14) evLog.shift();
   }
+  /* 「右邊那一條畫不上去」這種問題，關鍵是要知道指標事件到底有沒有送進來。
+     把畫面橫向切成 20 格，分別統計：
+       doc = 事件有送到網頁（不管落在哪個元素）
+       ink = 事件確實送到筆跡畫布上
+     兩個都是 0  -> iOS 根本沒把事件交給網頁（系統浮層蓋住了，我們改不了）
+     doc 有、ink 是 0 -> 網頁裡有東西蓋在畫布上面（我們的版面問題）
+     ink 有、卻畫不出來 -> 是繪圖邏輯的問題
+     只做計數，不呼叫 elementFromPoint，不會拖慢畫圖。 */
+  var ZN = 20;
+  var zoneDoc = [], zoneInk = [];
+  for (var zi = 0; zi < ZN; zi++) { zoneDoc.push(0); zoneInk.push(0); }
   ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'].forEach(function (t) {
     document.addEventListener(t, function (e) {
-      if (e.target && e.target.classList && e.target.classList.contains('ink')) logEv(e);
+      var k = Math.floor((e.clientX / innerWidth) * ZN);
+      if (k >= 0 && k < ZN) zoneDoc[k]++;
+      if (e.target && e.target.classList && e.target.classList.contains('ink')) {
+        if (k >= 0 && k < ZN) zoneInk[k]++;
+        logEv(e);
+      }
     }, true);
   });
+
+  function zoneText() {
+    var cv = $('#blocks canvas.ink');
+    var r = cv ? cv.getBoundingClientRect() : null;
+    var mx = Math.max(1, Math.max.apply(null, zoneDoc));
+    var rows = [];
+    for (var i = 0; i < ZN; i++) {
+      var x0 = Math.round(innerWidth * i / ZN), x1 = Math.round(innerWidth * (i + 1) / ZN);
+      var inCv = r && x1 > r.left && x0 < r.right;
+      rows.push('  ' + String(x0).padStart(4) + '-' + String(x1).padEnd(4) +
+        (inCv ? ' 畫布' : '    ') +
+        ' 網頁' + String(zoneDoc[i]).padStart(5) +
+        ' 畫布' + String(zoneInk[i]).padStart(5) + '  ' +
+        new Array(Math.round(zoneDoc[i] / mx * 24) + 1).join('#'));
+    }
+    return (r ? '畫布左右緣: x=' + Math.round(r.left) + ' ~ ' + Math.round(r.right) + '\n'
+      : '（找不到畫布）\n') + rows.join('\n');
+  }
 
   function diagText() {
     var cv = $('#blocks canvas.ink');
@@ -1395,7 +1429,10 @@
       'UA: ' + navigator.userAgent.slice(0, 90),
       '',
       '最近在畫布上的指標事件：',
-      L
+      L,
+      '',
+      '指標事件的左右分布（從畫不上去的那一區來回拖幾次再看）：',
+      zoneText()
     ].join('\n');
   }
 
@@ -2205,8 +2242,8 @@
       }),
       btn('🐞 診斷資訊', '', function () {
         openModal('🐞 診斷資訊',
-          '<p style="font-size:12.5px;color:#8A8680">先在畫布上用筆和手指各寫一筆，' +
-          '再回來打開這裡，然後把整個畫面截圖給我。</p>' +
+          '<p style="font-size:12.5px;color:#8A8680">先用筆在<b>畫不上去的那一區</b>來回拖個幾次' +
+          '（畫不出來也沒關係，重點是有沒有事件），再回來打開這裡，把整個畫面截圖給我。</p>' +
           '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;' +
           'line-height:1.7;background:#F7F4EF;border-radius:10px;padding:12px;margin:0">' +
           esc(diagText()) + '</pre>',
