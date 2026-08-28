@@ -1389,9 +1389,40 @@
       if (e.target && e.target.classList && e.target.classList.contains('ink')) {
         if (k >= 0 && k < ZN) zoneInk[k]++;
         logEv(e);
+      } else {
+        /* 沒落在畫布上的那些事件才是關鍵 —— 筆跡每斷一次就對應這裡一筆。
+           記下它被誰接走、在哪個位置。這種事件只占一成，記下來不影響效能。 */
+        stealCount(e);
       }
     }, true);
   });
+
+  var steals = {};
+  function stealCount(e) {
+    var el = e.target;
+    if (!el || !el.tagName) return;
+    var name = el.tagName.toLowerCase() +
+      (el.id ? '#' + el.id : '') +
+      (el.className && typeof el.className === 'string' && el.className.trim()
+        ? '.' + el.className.trim().split(/\s+/).join('.') : '');
+    var s = steals[name];
+    if (!s) s = steals[name] = { n: 0, x0: 9e9, x1: -9e9, y0: 9e9, y1: -9e9, types: {} };
+    s.n++;
+    s.x0 = Math.min(s.x0, e.clientX); s.x1 = Math.max(s.x1, e.clientX);
+    s.y0 = Math.min(s.y0, e.clientY); s.y1 = Math.max(s.y1, e.clientY);
+    s.types[e.type.replace('pointer', '')] = (s.types[e.type.replace('pointer', '')] || 0) + 1;
+  }
+  function stealText() {
+    var keys = Object.keys(steals).sort(function (a, b) { return steals[b].n - steals[a].n; });
+    if (!keys.length) return '  （沒有 —— 所有事件都落在畫布上）';
+    return keys.slice(0, 6).map(function (k) {
+      var s = steals[k];
+      return '  ' + s.n + ' 次  ' + k +
+        '\n      x=' + Math.round(s.x0) + '~' + Math.round(s.x1) +
+        '  y=' + Math.round(s.y0) + '~' + Math.round(s.y1) +
+        '  ' + Object.keys(s.types).map(function (t) { return t + '×' + s.types[t]; }).join(' ');
+    }).join('\n');
+  }
 
   function zoneText() {
     var cv = $('#blocks canvas.ink');
@@ -1432,7 +1463,10 @@
       L,
       '',
       '指標事件的左右分布（從畫不上去的那一區來回拖幾次再看）：',
-      zoneText()
+      zoneText(),
+      '',
+      '被畫布以外的元素接走的事件（筆跡斷點的來源）：',
+      stealText()
     ].join('\n');
   }
 
