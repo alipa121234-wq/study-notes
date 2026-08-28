@@ -234,6 +234,9 @@
         Ink.onToolChange();
       }
       if (e.pointerType === 'touch' && Ink.fingerBlocked()) {
+        /* 筆正在畫的時候手掌一定會壓在螢幕上，那時候絕不能當成捲動 ——
+           不然畫面會在筆下面滑走。 */
+        if (drawing) return;
         /* 手指不畫，改成捲動。畫布必須維持 touch-action:none —— 否則瀏覽器
            會連觸控筆的筆畫都當成捲動手勢攔走，所以捲動只能自己實作。 */
         var sc = cv.closest('#pagewrap');
@@ -243,6 +246,8 @@
         }
         return;
       }
+      /* 手掌先碰到螢幕、筆才落下的情況：把那個誤啟動的捲動取消掉 */
+      pan = null;
       e.preventDefault();
       cv.setPointerCapture(e.pointerId); pid = e.pointerId;
       var p = pos(e);
@@ -338,6 +343,10 @@
     function finish(e) {
       if (pan && (!e || e.pointerId === pan.id)) pan = null;
       if (!drawing) return;
+      /* 只有「正在畫的那一根」抬起才算畫完。
+         少了這道檢查，手掌一抬起就會把筆正在畫的那一筆結束掉 ——
+         手寫時手掌不斷接觸／離開螢幕，筆畫就被切得七零八落。 */
+      if (e && pid !== null && e.pointerId !== pid) return;
       drawing = false; pid = null;
       if (Ink.mode === 'eraser') {
         if (erased && erased.items.length) pushHistory(erased);

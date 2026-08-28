@@ -458,6 +458,11 @@
       });
     });
     (note.blocks || []).forEach(function (b) { host.appendChild(buildBlock(b)); });
+    /* 全部接上 DOM 之後立刻畫一次。不能只靠 buildBlock 裡的 rAF ——
+       分頁在背景時 rAF 會被凍結，回到前景之前畫布是空的，
+       看起來就像「這一塊壞掉了」。也不能在 buildBlock 裡直接畫，
+       那時候元素還沒進文件，量不到尺寸。 */
+    canvasMap.forEach(function (blk, cv) { Ink.render(cv, blk); });
     refreshHints();
     syncUndo();
   }
