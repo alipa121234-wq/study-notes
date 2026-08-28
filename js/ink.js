@@ -199,7 +199,10 @@
            收成 0.81~1.12（1.4 倍）：看得出輕重，但還是同一支筆。 */
         var step = Math.abs(p2[0] - p1[0]) + Math.abs(p2[1] - p1[1]);
         var fast = Math.min(1, step / (st.size * 6));
-        var edge = live ? j / 3 : Math.min(j, pts.length - j) / 3;   // 前後三段漸收
+        /* 前後三段漸收。但太短的筆畫（點、頓筆、被切斷的殘段）整條都在
+           「前後三段」裡，會整條變細 —— 那種筆畫本來就該是原本的粗細。 */
+        var edge = pts.length < 8 ? 9
+          : (live ? j / 3 : Math.min(j, pts.length - j) / 3);
         var taper = edge < 1 ? (0.7 + 0.3 * edge) : 1;
         ctx.lineWidth = st.size * (0.88 + 0.24 * pr) * (1 - 0.08 * fast) * taper;
         ctx.beginPath();
@@ -438,7 +441,17 @@
     }
     cv.addEventListener('pointerup', finish);
     cv.addEventListener('pointercancel', finish);
-    cv.addEventListener('pointerleave', function (e) { if (drawing) finish(e); });
+    /* 筆移出畫布不代表這一筆畫完了。
+       抓著指標捕捉的時候，即使筆跑到畫布外面，事件照樣會送回這個畫布，
+       pointerup 一定收得到 —— 這時把筆畫結束掉是錯的：往區塊邊緣（尤其
+       右上角）畫出去再畫回來，筆畫就被切成兩段，實際感受是「畫到那裡就斷、
+       要抬筆重下」，而且被切短的殘段還會套上收筆漸細，看起來特別細。
+       只有在沒抓到捕捉的情況下才需要這道保險，否則筆畫會卡住結束不了。 */
+    cv.addEventListener('pointerleave', function (e) {
+      if (!drawing) return;
+      try { if (cv.hasPointerCapture(e.pointerId)) return; } catch (err) { }
+      finish(e);
+    });
     cv.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   };
 
