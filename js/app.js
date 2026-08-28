@@ -486,8 +486,6 @@
         markDirty();
       });
       content.addEventListener('focus', function () { selectedBlockId = b.id; });
-      /* 標了顏色之後接著打字，不要把新字也塗上同一個顏色 */
-      Editor.keepMarksClosed(content);
       /* 對 OCR 產生的 ______ 點兩下 -> 直接填答案，填完自動上螢光筆 */
       content.addEventListener('dblclick', function (e) { fillBlank(e, content, b); });
 
@@ -1162,10 +1160,17 @@
         document.activeElement && document.activeElement.isContentEditable;
       pad.hidden = !on;
       if (!on) return;
-      /* 停在鍵盤上方；沒有鍵盤時就貼著畫面底部 */
+      /* 放在正在編輯那一塊的「上方、置中」，手才不會擋到自己寫的字 */
+      var blk = root.closest('.block');
+      var r = (blk || root).getBoundingClientRect();
+      var h = pad.offsetHeight || 56;
       var vv = window.visualViewport;
-      var bottom = vv ? (vv.offsetTop + vv.height) : innerHeight;
-      pad.style.top = Math.max(8, bottom - pad.offsetHeight - 12) + 'px';
+      var top = vv ? vv.offsetTop : 0;
+      var bottom = top + (vv ? vv.height : innerHeight);
+      var y = r.top - h - 10;
+      /* 區塊頂端被工具列蓋住或捲出畫面時，改放在區塊下方 */
+      if (y < top + 8) y = Math.min(bottom - h - 10, r.bottom + 10);
+      pad.style.top = Math.max(top + 8, y) + 'px';
     }
     ['focusin', 'focusout', 'pointerup', 'touchend'].forEach(function (ev) {
       document.addEventListener(ev, function () { setTimeout(syncPad, 60); });
@@ -2174,6 +2179,8 @@
 
   initTouchUI();
   keepStorage();
+  /* 標了顏色之後接著打字，不要把新字也塗上同一個顏色（全域裝一次就好） */
+  Editor.keepMarksClosed();
 
   /* 圖片轉文字要靠本機的 Python 伺服器。部署到靜態主機之後那個端點不存在，
      按鈕留著只會讓人按了出錯，所以要先判斷。

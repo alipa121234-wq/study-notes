@@ -176,8 +176,8 @@
    * contenteditable 的預設行為是：游標停在 <span> 尾端時，接著打的字會落在
    * span 裡面 —— 於是標了一次顏色之後，後面打的字全部被塗上同一個顏色。
    */
-  Editor.keepMarksClosed = function (root) {
-    function markAt(node) {
+  Editor.keepMarksClosed = function () {
+    function markAt(node, root) {
       var el = node && node.nodeType === 3 ? node.parentNode : node;
       while (el && el !== root) {
         if (el.classList && (el.classList.contains('hl') || el.classList.contains('fc'))) return el;
@@ -193,43 +193,58 @@
       while (n && n !== el) { if (n.nextSibling) return false; n = n.parentNode; }
       return n === el;
     }
-    function markToLeave() {
+    /* 光把游標移到標記外面沒有用 —— 瀏覽器會把「游標前面那個行內元素」的
+       樣式繼承給新輸入的字，字還是會被塞回標記裡。
+       所以改成事後檢查：先記住標記原本多長，輸入完若變長，就把多出來的
+       那幾個字搬到標記外面。這樣不必為鍵盤、注音、手寫轉文字、貼上、語音
+       各寫一套攔截，任何一種輸入方式都攔得到。 */
+    var watch = null;        // { el: 標記, len: 輸入前的長度 }
+    var composing = false;
+
+    function noteCaret() {
+      var root = Editor.currentRoot();
       var sel = global.getSelection();
-      if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+      if (!root || !sel || !sel.rangeCount || !sel.isCollapsed) { watch = null; return; }
       var r = sel.getRangeAt(0);
-      var m = markAt(r.startContainer);
-      return (m && atEnd(m, r.startContainer, r.startOffset)) ? m : null;
-    }
-    function caretTo(node, offset) {
-      var r = document.createRange();
-      r.setStart(node, offset); r.collapse(true);
-      var sel = global.getSelection();
-      sel.removeAllRanges(); sel.addRange(r);
+      if (!root.contains(r.startContainer)) { watch = null; return; }
+      var m = markAt(r.startContainer, root);
+      watch = (m && atEnd(m, r.startContainer, r.startOffset))
+        ? { el: m, len: m.textContent.length } : null;
     }
 
-    root.addEventListener('beforeinput', function (e) {
-      if (e.inputType !== 'insertText' || !e.data) return;
-      var m = markToLeave();
-      if (!m) return;
-      e.preventDefault();
-      var tn = document.createTextNode(e.data);
-      m.parentNode.insertBefore(tn, m.nextSibling);
-      caretTo(tn, tn.length);
-      root.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    function pullOut() {
+      if (composing || !watch) return;
+      var m = watch.el, before = watch.len;
+      watch = null;
+      if (!m.parentNode) return;
+      var extra = m.textContent.length - before;
+      if (extra <= 0) return;
 
-    /* 注音之類的組字輸入不走 insertText，攔不到 —— 改在組字「開始之前」
-       就把游標挪到標記外面，後面組出來的字自然就不會被塗色。 */
-    root.addEventListener('compositionstart', function () {
-      var m = markToLeave();
-      if (!m) return;
-      var next = m.nextSibling;
-      if (!next || next.nodeType !== 3) {
-        next = document.createTextNode('');
-        m.parentNode.insertBefore(next, m.nextSibling);
-      }
-      caretTo(next, 0);
-    });
+      /* 只處理「文字直接放在標記底下」這個常見情況；
+         巢狀結構就不動，寧可少做也不要把內容搬錯位置。 */
+      var last = m.lastChild;
+      if (!last || last.nodeType !== 3 || last.nodeValue.length < extra) return;
+
+      var tail = last.splitText(last.nodeValue.length - extra);
+      m.parentNode.insertBefore(tail, m.nextSibling);
+      if (!m.textContent.length) m.parentNode.removeChild(m);
+      try {
+        var nr = document.createRange();
+        nr.setStart(tail, tail.nodeValue.length);
+        nr.collapse(true);
+        var sel = global.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(nr);
+      } catch (e) { /* 位置沒了就算了 */ }
+    }
+
+    document.addEventListener('selectionchange', noteCaret);
+    document.addEventListener('input', pullOut, true);
+    document.addEventListener('compositionstart', function () { composing = true; }, true);
+    document.addEventListener('compositionend', function () {
+      composing = false;
+      setTimeout(pullOut, 0);
+    }, true);
   };
 
   /* ---------- 在游標處插入文字（語音用） ---------- */

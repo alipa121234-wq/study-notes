@@ -392,7 +392,8 @@ body.no-ocr .bar button[data-a="ocr"]{display:none;}
 
 /* 用觸控筆寫字時的小鍵盤 —— 為了刪一個字而叫出整個系統鍵盤太麻煩 */
 #penpad{
-  position:fixed;right:16px;z-index:1140;display:flex;gap:6px;padding:7px;
+  position:fixed;left:50%;transform:translateX(-50%);
+  z-index:1140;display:flex;gap:6px;padding:7px;
   background:#fff;border:1px solid var(--line);border-radius:14px;
   box-shadow:0 8px 24px rgba(0,0,0,.18);
 }
