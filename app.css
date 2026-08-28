@@ -373,3 +373,11 @@ body.no-ocr .bar button[data-a="ocr"]{display:none;}
   outline:2px dashed var(--accent);outline-offset:6px;border-radius:6px;
   min-height:3.2em;
 }
+
+/* 手寫區／圖片／筆跡層都不該被當成「可選取的文字」。
+   在 iPad 上用筆拖曳時，iOS 會把它判定成選取網頁內容：
+   整塊變藍、跳出「拷貝／查詢」選單，筆畫也就畫不出來。 */
+.sblock .content, .iblock .content, .sk-hint, .block .ink{
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none;
+}
