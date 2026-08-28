@@ -1386,6 +1386,7 @@
     document.addEventListener(t, function (e) {
       var k = Math.floor((e.clientX / innerWidth) * ZN);
       if (k >= 0 && k < ZN) zoneDoc[k]++;
+      seqLog(e);
       if (e.target && e.target.classList && e.target.classList.contains('ink')) {
         if (k >= 0 && k < ZN) zoneInk[k]++;
         logEv(e);
@@ -1396,6 +1397,37 @@
       }
     }, true);
   });
+
+  /* 筆畫為什麼會斷：把「按下／放開／取消」按時間順序記下來，move 只記次數。
+     如果每次筆的 up 之前都先出現一個 touch（手掌），那就是手掌觸發了
+     瀏覽器手勢，而手勢一啟動瀏覽器就會取消所有進行中的指標。 */
+  var seq = [], seqT0 = 0;
+  function seqLog(e) {
+    if (e.type === 'pointermove') {
+      var l = seq[seq.length - 1];
+      if (l && l.t === 'move' && l.p === e.pointerType) { l.n++; return; }
+      seq.push({ t: 'move', p: e.pointerType, n: 1, ms: Date.now() });
+    } else {
+      if (!seqT0) seqT0 = Date.now();
+      seq.push({
+        t: e.type.replace('pointer', ''), p: e.pointerType, n: 0, ms: Date.now(),
+        x: Math.round(e.clientX), y: Math.round(e.clientY),
+        ink: !!(e.target && e.target.classList && e.target.classList.contains('ink'))
+      });
+    }
+    if (seq.length > 34) seq.shift();
+  }
+  function seqText() {
+    if (!seq.length) return '  （還沒有事件）';
+    var t0 = seq[0].ms;
+    return seq.map(function (s) {
+      var head = '  +' + String(s.ms - t0).padStart(5) + 'ms  ' +
+        (s.p === 'pen' ? '筆  ' : s.p === 'touch' ? '手掌' : '滑鼠') + ' ';
+      if (s.t === 'move') return head + 'move ×' + s.n;
+      return head + s.t.toUpperCase().padEnd(6) +
+        ' (' + s.x + ',' + s.y + ')' + (s.ink ? ' 在畫布' : ' 不在畫布');
+    }).join('\n');
+  }
 
   var steals = {};
   function stealCount(e) {
@@ -1450,23 +1482,30 @@
       return '  ' + x.t + (x.n > 1 ? ' ×' + x.n : '') + '  ' + (x.pt || '?');
     }).join('\n') || '  （還沒有事件 —— 請先在畫布上寫一筆再打開）';
     return [
-      '模式: ' + Ink.mode,
-      '手掌防誤觸: ' + (Ink.fingerBlocked() ? '開（只有筆能畫）' : '關（手指也能畫）'),
-      '  penOnly=' + Ink.penOnly + '  sawPen=' + Ink.sawPen,
-      '畫布 touch-action: ' + ta,
-      '畫布 pointer-events: ' + pe,
-      '螢幕: ' + innerWidth + '×' + innerHeight + '  DPR=' + (devicePixelRatio || 1) +
-      '  觸控點=' + (navigator.maxTouchPoints || 0),
-      'UA: ' + navigator.userAgent.slice(0, 90),
+      /* 最重要的放最前面 —— 診斷視窗會被螢幕高度切掉，
+         上一次就是重點在下面沒截到。 */
+      '★ 事件時序（看每次筆的 UP 之前有沒有先出現「手掌」）：',
+      seqText(),
+      '',
+      '螢幕: ' + innerWidth + '×' + innerHeight +
+      '（' + (innerWidth > innerHeight ? '橫向' : '直向') + '）' +
+      '  DPR=' + (devicePixelRatio || 1) + '  觸控點=' + (navigator.maxTouchPoints || 0),
+      '模式: ' + Ink.mode +
+      '　手掌防誤觸: ' + (Ink.fingerBlocked() ? '開' : '關') +
+      '（penOnly=' + Ink.penOnly + '）',
+      '畫布 touch-action: ' + ta + '　pointer-events: ' + pe,
+      '#pagewrap touch-action: ' +
+      getComputedStyle($('#pagewrap')).touchAction,
+      'UA: ' + navigator.userAgent.slice(0, 60),
+      '',
+      '被畫布以外的元素接走的事件：',
+      stealText(),
       '',
       '最近在畫布上的指標事件：',
       L,
       '',
-      '指標事件的左右分布（從畫不上去的那一區來回拖幾次再看）：',
-      zoneText(),
-      '',
-      '被畫布以外的元素接走的事件（筆跡斷點的來源）：',
-      stealText()
+      '指標事件的左右分布：',
+      zoneText()
     ].join('\n');
   }
 
