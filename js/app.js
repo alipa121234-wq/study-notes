@@ -1141,28 +1141,57 @@
        手寫轉文字沒辦法輸入退格、空白、換行，為了刪一個字要叫出整個
        系統鍵盤太麻煩，所以在旁邊放三顆就好。 */
     var pad = $('#penpad');
-    function padAct(k) {
-      var root = Editor.currentRoot();
-      if (!root) return;
-      root.focus();
-      if (k === 'back') document.execCommand('delete');
-      else if (k === 'space') document.execCommand('insertText', false, ' ');
-      else document.execCommand('insertLineBreak');
-      root.dispatchEvent(new Event('input', { bubbles: true }));
+
+    /* 標題是 <input>，內文是 contenteditable，兩者要分開處理 */
+    function padTarget() {
+      var a = document.activeElement;
+      if (a === $('#noteTitle')) return a;
+      return a && a.isContentEditable ? a : null;
     }
+
+    function padAct(k) {
+      var el = padTarget();
+      if (!el) return;
+      el.focus();
+
+      if (el.tagName === 'INPUT') {
+        var s = el.selectionStart, e = el.selectionEnd;
+        if (k === 'back') {
+          if (s !== e) el.setRangeText('', s, e, 'end');
+          else if (s > 0) el.setRangeText('', s - 1, s, 'end');
+          else return;
+        } else if (k === 'space') {
+          el.setRangeText(' ', s, e, 'end');
+        } else {
+          /* 單行的標題沒有「換行」可言，就當成「寫完了，跳到內文」 */
+          var first = $('#blocks .tblock .content');
+          if (first) { first.focus(); setTimeout(syncPad, 60); }
+          return;
+        }
+      } else {
+        if (k === 'back') document.execCommand('delete');
+        else if (k === 'space') document.execCommand('insertText', false, ' ');
+        else document.execCommand('insertLineBreak');
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
     Array.prototype.forEach.call(pad.querySelectorAll('button'), function (b) {
       onTap(b, function () { padAct(b.dataset.k); });
     });
 
     function syncPad() {
-      var root = Editor.currentRoot();
-      var on = TOUCH && Ink.mode === 'select' && !!root &&
-        document.activeElement && document.activeElement.isContentEditable;
+      var el = padTarget();
+      var on = TOUCH && Ink.mode === 'select' && !!el;
       pad.hidden = !on;
       if (!on) return;
+      var inTitle = el.tagName === 'INPUT';
+      /* 標題的 ↵ 改成「跳到內文」，圖示不變但說明要對 */
+      var ent = pad.querySelector('[data-k="enter"]');
+      if (ent) ent.title = inTitle ? '寫完了，跳到內文' : '換行';
       /* 放在正在編輯那一塊的「上方、置中」，手才不會擋到自己寫的字 */
-      var blk = root.closest('.block');
-      var r = (blk || root).getBoundingClientRect();
+      var blk = inTitle ? el : (el.closest('.block') || el);
+      var r = blk.getBoundingClientRect();
       var h = pad.offsetHeight || 56;
       var vv = window.visualViewport;
       var top = vv ? vv.offsetTop : 0;
