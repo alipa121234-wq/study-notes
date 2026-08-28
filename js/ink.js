@@ -121,17 +121,16 @@
   };
 
   /**
-   * 筆跡畫布的繪圖環境。
-   * desynchronized 讓畫布繞過合成器直接送顯示，可以少掉一點延遲 ——
-   * 網頁拿不到 Apple Pencil 的預測筆觸，能省的延遲都得省。
-   * 選項只在「第一次」取得時有效，所以一律走這裡。
+   * 筆跡畫布的繪圖環境。快取起來，因為 getContext 的選項只有第一次有效。
+   *
+   * 這裡「不」用 desynchronized。它繞過合成器直接送顯示、可以少掉一點延遲，
+   * 但低延遲畫布不保證保留既有內容 —— 而筆跡是逐段疊上去的，一旦緩衝區
+   * 被丟掉，前面畫的東西就跟著不見。iPad 上實測：墨跡一路累積到某個時點
+   * 突然掉掉四成，消失的正是最近逐段疊上去的部分。
+   * 省下的那 1ms 不值得拿畫面完整性去換。
    */
   function ctx2d(cv) {
-    if (!cv.__ctx) {
-      try { cv.__ctx = cv.getContext('2d', { desynchronized: true }); }
-      catch (e) { cv.__ctx = cv.getContext('2d'); }
-      if (!cv.__ctx) cv.__ctx = cv.getContext('2d');
-    }
+    if (!cv.__ctx) cv.__ctx = cv.getContext('2d');
     return cv.__ctx;
   }
 
@@ -369,6 +368,18 @@
       appendFrom(1);
     }
 
+    /* 停筆之後把畫面跟資料重新對齊一次。
+       畫的當下是逐段疊上去的，只要有任何一步讓畫布內容跟資料對不上
+       （瀏覽器丟掉緩衝區、尺寸變動、外部重繪…），畫面就會少東西，
+       而且自己不會好。這一次重畫也順便把收筆的漸細補上 —— 整塊重畫
+       在筆畫多時要十幾毫秒，但這時筆已經離開螢幕，感覺不到。
+       每畫一筆都重新計時，所以連續書寫的途中不會觸發。 */
+    var idleId = 0;
+    function reconcile() {
+      clearTimeout(idleId);
+      idleId = setTimeout(function () { Ink.render(cv, block); }, 400);
+    }
+
     cv.addEventListener('pointermove', function (e) {
       if (pan && e.pointerId === pan.id) {
         pan.el.scrollTop = pan.top - (e.clientY - pan.y);
@@ -419,11 +430,7 @@
         if (curStroke.pts.length < 1) block.strokes.pop();
         else {
           pushHistory({ kind: 'add', blockId: block.id, stroke: curStroke });
-          /* 筆抬起來才知道結尾在哪，重畫一次讓收筆的漸細長出來。
-             但重畫是整塊重來，成本隨筆畫數線性成長。收筆漸細只是好看，
-             不值得為它讓每次抬筆都頓一下 —— 上一次重畫超過 4ms 就放棄，
-             以這台裝置的實測速度為準。 */
-          if (curStroke.tool !== 'hl' && !(cv.__renderMs > 4)) Ink.render(cv, block);
+          reconcile();
         }
         curStroke = null;
       }
