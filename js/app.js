@@ -1769,7 +1769,8 @@
     $('#modalBody').innerHTML = bodyHTML || '';
     var foot = $('#modalFoot');
     foot.innerHTML = '';
-    (footNodes || []).forEach(function (n) { foot.appendChild(n); });
+    /* 允許呼叫端用 cond ? btn(...) : null 決定要不要放某顆按鈕 */
+    (footNodes || []).forEach(function (n) { if (n) foot.appendChild(n); });
     $('#modal').hidden = false;
   }
   function closeModal() { $('#modal').hidden = true; }
@@ -2265,6 +2266,140 @@
   /* ============================================================
      備份 / 還原
      ============================================================ */
+  /* ---------- 匯入：逐篇比對合併 ----------
+     原本是整包覆蓋（同 ID 直接寫掉）。那會弄丟資料：週一從 iPad 匯出、
+     週二在筆電改了同一篇、週三匯入週一的備份 —— 週二的修改就沒了，
+     而且沒有任何提示。改成逐篇看 updatedAt 決定，永遠不用舊的蓋掉新的。
+
+     判斷只靠兩台裝置的時鐘。時區設錯的話「誰比較新」會判斷錯 ——
+     所以套用前一定先給使用者看清單，而且留一個還原點。 */
+  function mergePlan(data, localNotes, localFolders) {
+    var inNotes = data.notes || data;
+    var inFolders = data.folders || [];
+    var byId = {};
+    localNotes.forEach(function (n) { byId[n.id] = n; });
+    /* 舊格式的備份檔整包就是一個陣列，沒有 at 欄位。
+       但陣列有 Array.prototype.at 這個「方法」，`data.at || 0` 會拿到函式
+       而不是 0，時間就變成 Invalid Date。一定要確認型別。 */
+    var p = {
+      add: [], update: [], keep: [], same: [], folders: [],
+      at: typeof data.at === 'number' ? data.at : 0
+    };
+    inNotes.forEach(function (f) {
+      var l = byId[f.id];
+      if (!l) { p.add.push({ f: f }); return; }
+      var lu = l.updatedAt || 0, fu = f.updatedAt || 0;
+      if (fu === lu) p.same.push({ f: f, l: l });
+      else if (fu > lu) p.update.push({ f: f, l: l });
+      else p.keep.push({ f: f, l: l });   // 本機比較新 —— 不覆蓋
+    });
+    var have = {};
+    localFolders.forEach(function (x) { have[x.id] = 1; });
+    /* 資料夾沒有 updatedAt，分不出誰新，所以只補缺的、不動既有的 */
+    inFolders.forEach(function (x) { if (!have[x.id]) p.folders.push(x); });
+    return p;
+  }
+
+  function tsText(t) {
+    if (!t) return '沒有時間';
+    return new Date(t).toLocaleString('zh-TW',
+      { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  function titleOf(n) { return esc(n.title || '未命名筆記'); }
+
+  function showMergePlan(p) {
+    var rows = [];
+    function sec(list, label, color, detail) {
+      if (!list.length) return;
+      rows.push('<div style="margin:10px 0 4px;font-weight:700;color:' + color + '">' +
+        label + ' ' + list.length + ' 篇</div>' +
+        '<div style="font-size:12.5px;line-height:1.8;color:#5A564F">' +
+        list.slice(0, 12).map(function (x) {
+          return '　' + titleOf(x.f) + (detail ? '<span style="color:#8A8680">　' + detail(x) + '</span>' : '');
+        }).join('<br>') +
+        (list.length > 12 ? '<br>　<span style="color:#8A8680">…還有 ' + (list.length - 12) + ' 篇</span>' : '') +
+        '</div>');
+    }
+    sec(p.add, '新增', '#3D7BD6');
+    sec(p.update, '更新', '#4CAF8E', function (x) {
+      return '檔案 ' + tsText(x.f.updatedAt) + ' 比本機 ' + tsText(x.l.updatedAt) + ' 新';
+    });
+    sec(p.keep, '保留本機（本機比較新，不覆蓋）', '#E8A33D', function (x) {
+      return '本機 ' + tsText(x.l.updatedAt) + ' 比檔案 ' + tsText(x.f.updatedAt) + ' 新';
+    });
+    if (p.same.length) {
+      rows.push('<div style="margin:10px 0 4px;color:#8A8680;font-size:12.5px">' +
+        '內容相同、略過 ' + p.same.length + ' 篇</div>');
+    }
+    if (p.folders.length) {
+      rows.push('<div style="margin:10px 0 4px;color:#5A564F;font-size:12.5px">' +
+        '新增 ' + p.folders.length + ' 個資料夾</div>');
+    }
+    var willChange = p.add.length + p.update.length + p.folders.length;
+
+    openModal('要套用這些變更嗎？',
+      '<p style="font-size:12.5px;color:#8A8680;margin:0 0 6px">' +
+      '備份檔匯出時間：' + (p.at ? tsText(p.at) : '（舊格式，檔案沒記錄）') + '<br>' +
+      '本機比較新的筆記不會被覆蓋。套用後可以一鍵還原。</p>' +
+      (rows.join('') || '<p style="color:#8A8680">這份備份的內容跟本機完全一樣，沒有要改的。</p>'),
+      [
+        willChange ? btn('套用（' + willChange + ' 項）', 'btn-primary', function () { applyMerge(p); }) : null,
+        btn('取消', '', closeModal)
+      ]);
+  }
+
+  /* 還原點：只記「我們動過什麼」，不是整個資料庫的快照 ——
+     這樣還原時不會連使用者在匯入之後做的其他事一起打掉。
+     只留在記憶體裡，重新載入就沒了，所以還原要趁當下。 */
+  var lastMerge = null;
+  function applyMerge(p) {
+    var undo = {
+      added: p.add.map(function (x) { return x.f.id; }),
+      updated: p.update.map(function (x) { return x.l; }),   // 覆蓋前的本機版本
+      folders: p.folders.map(function (x) { return x.id; }),
+      at: Date.now()
+    };
+    var put = p.add.concat(p.update).map(function (x) { return x.f; });
+    Store.putMany(put)
+      .then(function () { return p.folders.length ? Store.putFolders(p.folders) : null; })
+      .then(reloadAll)
+      .then(function () {
+        lastMerge = undo;
+        refreshBackupBadge();
+        closeModal();
+        toast('已套用：新增 ' + p.add.length + ' 篇、更新 ' + p.update.length +
+          ' 篇' + (p.keep.length ? '、保留本機 ' + p.keep.length + ' 篇' : '') +
+          '（可在備份/還原裡復原）');
+      });
+  }
+  function undoMerge() {
+    if (!lastMerge) return;
+    var u = lastMerge;
+    Promise.all(u.added.map(function (id) { return Store.del(id); }))
+      .then(function () { return u.updated.length ? Store.putMany(u.updated) : null; })
+      .then(function () {
+        return Promise.all(u.folders.map(function (id) { return Store.delFolder(id); }));
+      })
+      .then(reloadAll)
+      .then(function () {
+        lastMerge = null;
+        closeModal();
+        toast('已還原到匯入前');
+      });
+  }
+  function reloadAll() {
+    return Promise.all([Store.all(), Store.folders()]).then(function (r) {
+      notes = r[0]; folders = r[1];
+      /* 目前開著的那篇可能剛被檔案的版本換掉，要重新讀出來畫 */
+      if (note) {
+        var fresh = notes.filter(function (n) { return n.id === note.id; })[0];
+        if (fresh && fresh !== note) { note = fresh; openNote(note.id); }
+        else if (!fresh) { note = null; $('#blocks').innerHTML = ''; }
+      }
+      renderList();
+    });
+  }
+
   /* 備份檔做好放著等使用者按。
      iOS 要求 navigator.share() 必須在使用者手勢的同一個任務裡呼叫 ——
      等 IndexedDB 讀完再呼叫就過了那個時機，分享選單會直接被擋掉。
@@ -2367,30 +2502,20 @@
           if (!f) return;
           var fr = new FileReader();
           fr.onload = function () {
+            var data;
             try {
-              var data = JSON.parse(fr.result);
-              var list = data.notes || data;
-              var fl = data.folders || [];
-              if (!Array.isArray(list)) throw 0;
-              confirmModal('要匯入 ' + list.length + ' 份筆記' +
-                (fl.length ? '、' + fl.length + ' 個資料夾' : '') + '嗎？同 ID 的會被覆蓋。').then(function (ok) {
-                if (!ok) return;
-                Store.putMany(list)
-                .then(function () { return fl.length ? Store.putFolders(fl) : null; })
-                .then(function () { return Promise.all([Store.all(), Store.folders()]); })
-                .then(function (r) {
-                  notes = r[0]; folders = r[1];
-                  renderList();
-                  closeModal();
-                  toast('已匯入 ' + list.length + ' 份筆記');
-                });
-              });
-            } catch (e) { alert('檔案格式不正確。'); }
+              data = JSON.parse(fr.result);
+              if (!Array.isArray(data.notes || data)) throw 0;
+            } catch (e) { alert('檔案格式不正確。'); return; }
+            Promise.all([Store.all(), Store.folders()]).then(function (r) {
+              showMergePlan(mergePlan(data, r[0], r[1]));
+            });
           };
           fr.readAsText(f);
         };
         inp.click();
       }),
+      (lastMerge ? btn('↩ 還原到匯入前', '', function () { undoMerge(); }) : null),
       btn('🐞 診斷資訊', '', function () {
         var txt = diagText();
         /* 螢幕放不下整份報告，截圖一定會被切掉 —— 用複製的才拿得到全部。 */
