@@ -2265,22 +2265,100 @@
   /* ============================================================
      備份 / 還原
      ============================================================ */
+  /* 備份檔做好放著等使用者按。
+     iOS 要求 navigator.share() 必須在使用者手勢的同一個任務裡呼叫 ——
+     等 IndexedDB 讀完再呼叫就過了那個時機，分享選單會直接被擋掉。
+     所以打開視窗時就先做好，按下去才是同步呼叫。 */
+  var pending = null;
+  function buildBackup() {
+    if (saveTimer) { clearTimeout(saveTimer); save(); }
+    pending = Promise.all([Store.all(), Store.folders()]).then(function (r) {
+      var d = new Date();
+      var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+      var name = '讀書筆記備份_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+        '_' + pad(d.getHours()) + pad(d.getMinutes()) +
+        '_' + r[0].length + '篇.json';
+      var blob = new Blob(
+        [JSON.stringify({ v: 2, at: Date.now(), notes: r[0], folders: r[1] })],
+        { type: 'application/json' });
+      var o = { blob: blob, name: name, n: r[0].length };
+      try { o.file = new File([blob], name, { type: 'application/json' }); } catch (e) { }
+      pending.ready = o;
+      return o;
+    });
+    return pending;
+  }
+  function markBackedUp(n) {
+    localStorage.setItem('sn_lastbackup', JSON.stringify({ at: Date.now(), n: n }));
+    refreshBackupBadge();
+  }
+  function lastBackup() {
+    try { return JSON.parse(localStorage.getItem('sn_lastbackup')); } catch (e) { return null; }
+  }
+  /* 超過七天沒備份就在按鈕上點一個紅點。會忘記才是常態。 */
+  function refreshBackupBadge() {
+    var b = $('#btnBackup'); if (!b) return;
+    var lb = lastBackup();
+    var stale = !lb || (Date.now() - lb.at) > 7 * 864e5;
+    b.classList.toggle('needs-backup', stale);
+    b.title = lb ? '上次備份：' + new Date(lb.at).toLocaleString('zh-TW') : '還沒有備份過';
+  }
+  refreshBackupBadge();
+
+  function downloadBackup(o) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(o.blob);
+    a.download = o.name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+    markBackedUp(o.n);
+  }
+
   $('#btnBackup').addEventListener('click', function () {
+    buildBackup();
+    var lb = lastBackup();
+    var days = lb ? Math.floor((Date.now() - lb.at) / 864e5) : null;
+    var when = !lb ? '<b style="color:#C25B4E">還沒有備份過。</b>'
+      : (days >= 7 ? '<b style="color:#C25B4E">上次備份是 ' + days + ' 天前</b>（' : '上次備份：')
+      + new Date(lb.at).toLocaleString('zh-TW') + (days >= 7 ? '）' : '');
+
+    /* 分享選單裡 iCloud 雲碟、Google Drive、OneDrive 都會出現（裝了對應的
+       App 就會註冊成「檔案」的位置），所以不需要各自串 API、也不必碰任何
+       帳號憑證。桌機沒有這個選單，退回一般下載。 */
+    var canShare = !!(navigator.canShare && navigator.share);
+    var acts = [];
+    if (canShare) {
+      acts.push(btn('☁️ 備份到雲端', 'btn-primary', function (e) {
+        var o = pending && pending.ready;
+        var go = function (o) {
+          if (!o || !o.file || !navigator.canShare({ files: [o.file] })) {
+            downloadBackup(o); return;
+          }
+          navigator.share({ files: [o.file], title: o.name })
+            .then(function () { markBackedUp(o.n); toast('已備份 ' + o.n + ' 篇筆記'); })
+            .catch(function (err) {
+              if (err && err.name === 'AbortError') return;   // 使用者自己取消
+              downloadBackup(o);
+            });
+        };
+        if (o) go(o); else pending.then(go);   // 還沒做完只好等，iOS 可能會擋
+      }));
+    }
+    acts.push(btn(canShare ? '⬇ 改成下載檔案' : '⬇ 匯出全部筆記',
+      canShare ? '' : 'btn-primary', function () {
+        var o = pending && pending.ready;
+        if (o) downloadBackup(o); else pending.then(downloadBackup);
+      }));
+
     openModal('備份 / 還原',
-      '<p style="font-size:13px;color:#8A8680">所有筆記都存在這台電腦的瀏覽器裡。' +
-      '建議定期匯出備份檔；換電腦或清除瀏覽器資料前一定要先匯出。</p>', [
-      btn('⬇ 匯出全部筆記', 'btn-primary', function () {
-        if (saveTimer) { clearTimeout(saveTimer); save(); }
-        Promise.all([Store.all(), Store.folders()]).then(function (r) {
-          var blob = new Blob([JSON.stringify({ v: 2, at: Date.now(), notes: r[0], folders: r[1] }, null, 1)],
-            { type: 'application/json' });
-          var a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = '讀書筆記備份_' + new Date().toISOString().slice(0, 10) + '.json';
-          a.click();
-          setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
-        });
-      }),
+      '<p style="font-size:13px;color:#8A8680">' + when + '<br>' +
+      '筆記只存在這台裝置的瀏覽器裡，沒有自動同步 —— ' +
+      '換裝置或清除瀏覽器資料前一定要先備份。</p>' +
+      (canShare ? '<p style="font-size:12.5px;color:#8A8680">' +
+        '按「備份到雲端」會跳出分享選單，選<b>「儲存到檔案」</b>之後就能存到 ' +
+        '<b>iCloud 雲碟／Google Drive／OneDrive</b>（要先裝好對應的 App）。' +
+        '每次存到同一個資料夾，檔名有日期時間不會蓋掉舊的。</p>' : ''),
+      acts.concat([
       btn('⬆ 匯入備份檔', '', function () {
         var inp = document.createElement('input');
         inp.type = 'file'; inp.accept = '.json,application/json';
@@ -2341,7 +2419,7 @@
           esc(txt) + '</pre>',
           [copyBtn, btn('關閉', '', closeModal)]);
       })
-    ]);
+    ]));
   });
 
   /* ============================================================

@@ -371,6 +371,13 @@ body.side-open #sideMask{display:block;}
 }
 #selbar button.sw{border:none;}
 
+/* 超過七天沒備份就點個紅點。筆記只在這台裝置上，沒備份等於沒有。 */
+#btnBackup.needs-backup{position:relative;}
+#btnBackup.needs-backup:after{
+  content:'';position:absolute;top:2px;right:2px;width:7px;height:7px;
+  border-radius:50%;background:#C25B4E;
+}
+
 /* 沒有本機 Python 伺服器時（例如部署到靜態主機），OCR 用不了就別顯示 */
 body.no-ocr .bar button[data-a="ocr"]{display:none;}
 
