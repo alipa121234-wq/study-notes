@@ -2314,13 +2314,32 @@
         inp.click();
       }),
       btn('🐞 診斷資訊', '', function () {
+        var txt = diagText();
+        /* 螢幕放不下整份報告，截圖一定會被切掉 —— 用複製的才拿得到全部。 */
+        var copyBtn = btn('📋 複製全部', 'btn-primary', function () {
+          var done = function () { copyBtn.textContent = '✓ 已複製，貼到對話裡就行'; };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(txt).then(done, fallback);
+          } else fallback();
+          function fallback() {
+            var ta = document.createElement('textarea');
+            ta.value = txt;
+            ta.style.cssText = 'position:fixed;left:0;top:0;opacity:0';
+            document.body.appendChild(ta);
+            ta.select(); ta.setSelectionRange(0, txt.length);
+            try { document.execCommand('copy'); done(); }
+            catch (e) { copyBtn.textContent = '複製失敗，請長按下面的文字選取'; }
+            ta.remove();
+          }
+        });
         openModal('🐞 診斷資訊',
-          '<p style="font-size:12.5px;color:#8A8680">先用筆在<b>畫不上去的那一區</b>來回拖個幾次' +
-          '（畫不出來也沒關係，重點是有沒有事件），再回來打開這裡，把整個畫面截圖給我。</p>' +
+          '<p style="font-size:12.5px;color:#8A8680">先用筆在<b>會出問題的那一區</b>來回拖個幾次，' +
+          '再回來打開這裡按「📋 複製全部」，直接貼到對話裡 —— ' +
+          '截圖會被螢幕高度切掉，複製才拿得到完整內容。</p>' +
           '<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;' +
           'line-height:1.7;background:#F7F4EF;border-radius:10px;padding:12px;margin:0">' +
-          esc(diagText()) + '</pre>',
-          [btn('關閉', 'btn-primary', closeModal)]);
+          esc(txt) + '</pre>',
+          [copyBtn, btn('關閉', '', closeModal)]);
       })
     ]);
   });
