@@ -1254,6 +1254,11 @@
       spk.title = '朗讀（三秒內再按一次會放慢）';
       onTap(spk, function () { speakSelection(savedRange); });
       bar.appendChild(spk);
+      var rep = document.createElement('button');
+      rep.textContent = '🔁';
+      rep.title = '重複播放（中英文都念，按停止才停）';
+      onTap(rep, function () { loopSelection(savedRange); });
+      bar.appendChild(rep);
     }
 
     function applySel(kind, n) {
@@ -1612,7 +1617,11 @@
         return;
       }
       /* 用 e.code 不用 e.key：Mac／iPad 鍵盤按 Option+R 得到的 key 是「®」 */
-      if (code === 'KeyR') { e.preventDefault(); speakSelection(); return; }
+      if (code === 'KeyR') {
+        e.preventDefault();
+        if (e.shiftKey) loopSelection(); else speakSelection();
+        return;
+      }
       if (k.toLowerCase() === 'q') { e.preventDefault(); manualCard(); return; }
       if (k.toLowerCase() === 'b') { e.preventDefault(); Ink.setMode('pen'); return; }
       if (k.toLowerCase() === 'h') { e.preventDefault(); Ink.setMode('hl'); return; }
@@ -1859,19 +1868,76 @@
   }
 
   /* ---------- 朗讀 ---------- */
-  function sayText(t) {
+  function sayText(t, opts) {
     if (!window.Speak || !Speak.supported) { toast('這個瀏覽器不支援朗讀'); return; }
-    var r = Speak.say(t);
+    var r = Speak.say(t, opts);
     if (!r) { toast('沒有可以念的文字'); return; }
     if (r.slow) toast('🐢 放慢再念一次');
   }
   /* 選取在 iOS 上按按鈕時可能已經被收走，所以接受一個事先存下的範圍當備援 */
-  function speakSelection(range) {
+  function selectionText(range) {
     var sel = window.getSelection();
-    var t = sel && !sel.isCollapsed ? String(sel) : (range ? range.toString() : '');
-    if (!t.trim()) { toast('先選取要念的字'); return; }
-    sayText(t);
+    return sel && !sel.isCollapsed ? String(sel) : (range ? range.toString() : '');
   }
+  /* 選取的字中英文都念 ——「slash 斜線」整行選起來，聽完英文接著聽中文 */
+  function speakSelection(range) {
+    var t = selectionText(range);
+    if (!t.trim()) { toast('先選取要念的字'); return; }
+    sayText(t, { all: true });
+  }
+  function loopSelection(range) {
+    var t = selectionText(range);
+    if (!t.trim()) { toast('先選取要重複播放的字'); return; }
+    startLoop(t);
+  }
+
+  /* 重複播放時浮在底部的控制列。
+     放在選取色條（貼著底部 12px）上面，兩個同時出現才不會疊在一起。 */
+  var speakbar = null;
+  function speakbarEl() {
+    if (speakbar) return speakbar;
+    speakbar = document.createElement('div');
+    speakbar.id = 'speakbar';
+    speakbar.hidden = true;
+    speakbar.innerHTML = '<span class="sp-n"></span><span class="sp-t"></span>' +
+      '<button class="btn btn-sm sp-slow"></button>' +
+      '<button class="btn btn-sm btn-primary sp-stop">⏹ 停止</button>';
+    document.body.appendChild(speakbar);
+    var slowBtn = $('.sp-slow', speakbar);
+    onTap(slowBtn, function () {
+      var on = !slowBtn.classList.contains('on');
+      slowBtn.classList.toggle('on', on);
+      slowBtn.textContent = on ? '🐇 正常速度' : '🐢 慢速';
+      Speak.setLoopSlow(on);
+      toast(on ? '下一遍開始放慢' : '下一遍恢復正常速度');
+    });
+    onTap($('.sp-stop', speakbar), function () { Speak.stopLoop('user'); });
+    return speakbar;
+  }
+  function startLoop(t) {
+    if (!window.Speak || !Speak.supported) { toast('這個瀏覽器不支援朗讀'); return; }
+    var bar = speakbarEl();
+    var slowBtn = $('.sp-slow', bar);
+    slowBtn.classList.remove('on');
+    slowBtn.textContent = '🐢 慢速';
+    var r = Speak.loop(t, {
+      all: true,
+      onRound: function (n) { $('.sp-n', bar).textContent = '🔁 第 ' + n + ' 遍'; },
+      onStop: function (why) {
+        bar.hidden = true;
+        if (why === 'blocked' || /^error/.test(why)) {
+          toast('重複播放停下來了（沒有開始發聲，可能被系統擋下）。再按一次 🔁 試試');
+        }
+      }
+    });
+    if (!r) { toast('沒有可以念的文字'); return; }
+    $('.sp-t', bar).textContent = r.text.length > 40 ? r.text.slice(0, 40) + '…' : r.text;
+    bar.hidden = false;
+  }
+  /* Esc 停止重複播放。用捕獲階段，輸入框、彈窗自己的 Esc 處理照常進行 */
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && window.Speak && Speak.supported && Speak.looping()) Speak.stopLoop('user');
+  }, true);
   function speakBtn(which, text, label) {
     if (!window.Speak || !Speak.supported || !Speak.segments(text).length) return '';
     return '<button type="button" class="speak-btn" data-say="' + which +

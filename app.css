@@ -445,3 +445,15 @@ body{
 }
 .speak-btn:active{transform:scale(.94);}
 #ansBox .speak-btn{margin:0 0 8px;font-size:13px;}
+
+/* 重複播放的控制列：在選取色條（貼底 12px）上方，兩個同時出現不會疊住 */
+#speakbar{
+  position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(80px + env(safe-area-inset-bottom, 0px));
+  z-index:1145;display:flex;align-items:center;gap:8px;max-width:min(92vw,560px);
+  background:#fff;border:1px solid var(--line);border-radius:999px;
+  padding:6px 8px 6px 14px;box-shadow:0 8px 24px rgba(0,0,0,.18);font-size:13px;
+}
+#speakbar .sp-n{font-weight:700;white-space:nowrap;}
+#speakbar .sp-t{color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;}
+#speakbar .sp-slow.on{background:var(--accent-soft);}
