@@ -1231,25 +1231,6 @@
     var savedRange = null;      // iOS 上點按鈕會把選取收掉，先存起來待會還原
     var LABEL = ['挖空填空', '名詞解釋', '易錯重點', '整句問答', '只標記'];
 
-    /**
-     * 觸控裝置上的按鈕要用 touchend 直接觸發。
-     * 千萬不能在 touchstart 上 preventDefault —— 那會讓 iOS 不再合成 click，
-     * 按鈕就完全按不動了（看得到、點不到）。
-     * 選取被收走的問題改由 applySel() 還原 savedRange 處理。
-     */
-    function onTap(el, fn) {
-      var viaTouch = false;
-      el.addEventListener('touchend', function (e) {
-        e.preventDefault();          // 這裡擋掉就不會再補一次 click
-        viaTouch = true;
-        fn();
-        setTimeout(function () { viaTouch = false; }, 500);
-      }, { passive: false });
-      el.addEventListener('click', function () { if (!viaTouch) fn(); });
-      /* 滑鼠按下時不要讓選取消失（桌機） */
-      el.addEventListener('mousedown', function (e) { e.preventDefault(); });
-    }
-
     for (var i = 1; i <= 5; i++) {
       (function (n) {
         var b = document.createElement('button');
@@ -1265,6 +1246,15 @@
     clr.title = '清除標記';
     onTap(clr, function () { applySel('hl', 0); });
     bar.appendChild(clr);
+    /* 背單字最常想知道的就是「這個字怎麼念」。
+       念完不收起色條、不動選取，方便馬上再按一次放慢念。 */
+    if (window.Speak && Speak.supported) {
+      var spk = document.createElement('button');
+      spk.textContent = '🔊';
+      spk.title = '朗讀（三秒內再按一次會放慢）';
+      onTap(spk, function () { speakSelection(savedRange); });
+      bar.appendChild(spk);
+    }
 
     function applySel(kind, n) {
       /* 就算前面擋不住，這裡再把選取範圍放回去 —— 不然套用時
@@ -1621,6 +1611,8 @@
         } else if (n > 0) Ink.setColor(n - 1);
         return;
       }
+      /* 用 e.code 不用 e.key：Mac／iPad 鍵盤按 Option+R 得到的 key 是「®」 */
+      if (code === 'KeyR') { e.preventDefault(); speakSelection(); return; }
       if (k.toLowerCase() === 'q') { e.preventDefault(); manualCard(); return; }
       if (k.toLowerCase() === 'b') { e.preventDefault(); Ink.setMode('pen'); return; }
       if (k.toLowerCase() === 'h') { e.preventDefault(); Ink.setMode('hl'); return; }
@@ -1843,6 +1835,47 @@
     b.textContent = label;
     b.addEventListener('click', fn);
     return b;
+  }
+
+  /**
+   * 觸控裝置上的按鈕要用 touchend 直接觸發。
+   * 千萬不能在 touchstart 上 preventDefault —— 那會讓 iOS 不再合成 click，
+   * 按鈕就完全按不動了（看得到、點不到）。
+   * touchend 擋掉預設行為還有一個好處：焦點不會從輸入框跑掉，
+   * 鍵盤不會收起來、選取也不會消失。
+   * （原本只在 initTouchUI 裡用；複習卡片的朗讀鈕也需要，所以搬到外層。）
+   */
+  function onTap(el, fn) {
+    var viaTouch = false;
+    el.addEventListener('touchend', function (e) {
+      e.preventDefault();          // 這裡擋掉就不會再補一次 click
+      viaTouch = true;
+      fn();
+      setTimeout(function () { viaTouch = false; }, 500);
+    }, { passive: false });
+    el.addEventListener('click', function () { if (!viaTouch) fn(); });
+    /* 滑鼠按下時不要讓選取／焦點消失（桌機） */
+    el.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  }
+
+  /* ---------- 朗讀 ---------- */
+  function sayText(t) {
+    if (!window.Speak || !Speak.supported) { toast('這個瀏覽器不支援朗讀'); return; }
+    var r = Speak.say(t);
+    if (!r) { toast('沒有可以念的文字'); return; }
+    if (r.slow) toast('🐢 放慢再念一次');
+  }
+  /* 選取在 iOS 上按按鈕時可能已經被收走，所以接受一個事先存下的範圍當備援 */
+  function speakSelection(range) {
+    var sel = window.getSelection();
+    var t = sel && !sel.isCollapsed ? String(sel) : (range ? range.toString() : '');
+    if (!t.trim()) { toast('先選取要念的字'); return; }
+    sayText(t);
+  }
+  function speakBtn(which, text, label) {
+    if (!window.Speak || !Speak.supported || !Speak.segments(text).length) return '';
+    return '<button type="button" class="speak-btn" data-say="' + which +
+      '" title="朗讀（三秒內再按一次會放慢）">' + (label || '🔊') + '</button>';
   }
 
   /* ============================================================
@@ -2088,6 +2121,8 @@
         e.preventDefault();
         stage.grade(+e.code.slice(5) - 1);
       }
+      /* 看完答案按 R 念答案（作答中輸入框自己吃掉按鍵，不會誤觸） */
+      if (e.code === 'KeyR' && stage.say) { e.preventDefault(); stage.say(); }
     }
     document.addEventListener('keydown', keyHandler);
 
@@ -2133,15 +2168,22 @@
 
       var contentHTML = '<div class="progress"><i style="width:' + (i / queue.length * 100) + '%"></i></div>' +
         '<div class="card-stage">' +
-        '<div class="card-q">' + Quiz.renderQ(c.q) + '</div>' +
+        '<div class="card-q">' + Quiz.renderQ(c.q) + speakBtn('q', c.q) + '</div>' +
         '<div id="inputBox" style="margin:12px 0;"><input id="userAns" type="text" ' +
         'placeholder="在這裡作答，按 Enter 送出（不會的話直接按 Enter 看答案）" ' +
         'style="width:100%;padding:8px;font-size:14px;border:1px solid #ccc;border-radius:4px;"></div>' +
-        '<div id="ansBox" hidden><div class="card-a" style="color:#2ecc71;margin:12px 0;"><strong>✓ 正確答案：</strong><br>' + Quiz.renderQ(c.a) + '</div><div id="feedback" style="color:#8A8680;font-size:13px;"></div></div>' +
+        '<div id="ansBox" hidden><div class="card-a" style="color:#2ecc71;margin:12px 0;"><strong>✓ 正確答案：</strong><br>' + Quiz.renderQ(c.a) + '</div>' +
+        /* 朗讀鈕放在 .card-a 外面：申論題會把 .card-a 整個換成標示版本 */
+        (speakBtn('a', c.a) ? '<div>' + speakBtn('a', c.a, '🔊 念答案') + '</div>' : '') +
+        '<div id="feedback" style="color:#8A8680;font-size:13px;"></div></div>' +
         srcHTML + '</div>';
 
       openModal('🧠 複習（' + (i + 1) + ' / ' + queue.length + '）', contentHTML,
         [btn('送出（Enter）', 'btn-primary', function () { checkAnswer(); })]);
+
+      Array.prototype.forEach.call($('#modalBody').querySelectorAll('.speak-btn'), function (b) {
+        onTap(b, function () { sayText(b.getAttribute('data-say') === 'a' ? c.a : c.q); });
+      });
 
       var inputEl = $('#userAns');
       if (inputEl) {
@@ -2150,12 +2192,14 @@
           /* 只有 Enter 才送出。空白鍵、數字鍵都要留給使用者打字
              （答案可能是「office worker」或含數字） */
           if (e.key === 'Enter') { e.preventDefault(); checkAnswer(); }
+          else if (e.altKey && e.code === 'KeyR') { e.preventDefault(); sayText(c.q); }
           else e.stopPropagation();
         });
       }
 
       stage.reveal = checkAnswer;
       stage.grade = grade;
+      stage.say = function () { sayText(c.a); };
 
       function checkAnswer() {
         if (revealed) return;
