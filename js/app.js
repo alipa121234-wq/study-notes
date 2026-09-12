@@ -46,13 +46,26 @@
   function syncUndo() {
     var u = $('#btnUndo'), r = $('#btnRedo');
     if (!u) return;
-    u.disabled = !Ink.canUndo();
-    r.disabled = !Ink.canRedo();
+    u.disabled = !Ink.canUndo() && !Editor.History.pick('undo');
+    r.disabled = !Ink.canRedo() && !Editor.History.pick('redo');
     u.style.opacity = u.disabled ? '.3' : '';
     r.style.opacity = r.disabled ? '.3' : '';
   }
-  function doUndo() { Ink.undo(findBlock, rerenderCanvas); syncUndo(); }
-  function doRedo() { Ink.redo(findBlock, rerenderCanvas); syncUndo(); }
+  /* 工具列的 ↶ ↷（還有不在打字時的 Ctrl+Z）：筆跡和文字（打字、標記）按時間排，
+     復原「最後做的那件事」。iPad 沒有 Ctrl+Z，標錯顏色只能靠這顆按鈕。 */
+  function doUndo() {
+    var t = Editor.History.pick('undo'), inkAt = Ink.topAt();
+    if (t && t.at >= inkAt) Editor.History.undo(t.root);
+    else Ink.undo(findBlock, rerenderCanvas);
+    syncUndo();
+  }
+  function doRedo() {
+    var t = Editor.History.pick('redo'), inkAt = Ink.redoTopAt();
+    if (t && (inkAt < 0 || t.at <= inkAt)) Editor.History.redo(t.root);
+    else Ink.redo(findBlock, rerenderCanvas);
+    syncUndo();
+  }
+  Editor.History.onChange = syncUndo;
 
   /* 空的畫圖區顯示提示，畫上東西後隱藏 */
   function refreshHints() {
@@ -483,6 +496,7 @@
       content.spellcheck = false;
       content.setAttribute('data-ph', '在這裡打字、用觸控筆寫字、或按 🎙️ 用說的…');
       content.innerHTML = b.html || '';
+      Editor.History.track(content, b.id);
       var ph = function () { content.classList.toggle('ph', !content.textContent.trim()); };
       ph();
       content.addEventListener('input', function () {
@@ -910,6 +924,7 @@
       ans = ans.trim();
       if (!ans) return;
       /* 用 range 換掉那串底線，再選起來套上「挖空填空」的黃色 */
+      Editor.History.checkpoint(root);
       var r = document.createRange();
       r.setStart(node, s); r.setEnd(node, t);
       r.deleteContents();
@@ -920,8 +935,7 @@
       sel.removeAllRanges(); sel.addRange(pick);
       root.focus();
       Editor.mark('hl', 1);
-      blk.html = root.innerHTML;
-      markDirty();
+      root.dispatchEvent(new Event('input'));     // 更新 b.html、存檔、記進復原紀錄
       toast('已填入「' + ans + '」並標成挖空題');
     });
   }
@@ -1043,7 +1057,12 @@
     var root = Editor.currentRoot();
     if (root && e.clipboardData) {
       var txt = e.clipboardData.getData('text/plain');
-      if (txt) { e.preventDefault(); Editor.insertTextAt(root, txt); root.dispatchEvent(new Event('input')); }
+      if (txt) {
+        e.preventDefault();
+        Editor.History.checkpoint(root);
+        Editor.insertTextAt(root, txt);
+        root.dispatchEvent(new Event('input'));
+      }
     }
   });
 
@@ -1268,8 +1287,10 @@
       if (savedRange && (!sel.rangeCount || sel.isCollapsed)) {
         try { sel.removeAllRanges(); sel.addRange(savedRange); } catch (e) { /* 已失效 */ }
       }
-      if (n) Editor.mark(kind, n); else Editor.clearMarks();
       var root = Editor.currentRoot();
+      if (root) Editor.History.checkpoint(root);
+      if (n) Editor.mark(kind, n); else Editor.clearMarks();
+      root = Editor.currentRoot() || root;
       if (root) root.dispatchEvent(new Event('input'));
       hideSel();
     }
@@ -1609,9 +1630,11 @@
         e.preventDefault();
         var n = +dm[1];
         if (editing) {
+          var root = Editor.currentRoot();
+          if (root) Editor.History.checkpoint(root);    // 標記自己算一步，Ctrl+Z 才復原得了
           if (n === 0) Editor.clearMarks();
           else Editor.mark(e.shiftKey ? 'fc' : 'hl', n);
-          var root = Editor.currentRoot();
+          root = Editor.currentRoot() || root;
           if (root) root.dispatchEvent(new Event('input'));
         } else if (n > 0) Ink.setColor(n - 1);
         return;
@@ -1634,13 +1657,25 @@
     /* 復原／重做：畫筆模式下即使游標還在文字區也要作用在筆跡 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       var kk = k.toLowerCase();
-      var inkScope = !editing || Ink.mode !== 'select';
-      if (kk === 'z' && inkScope) {
-        e.preventDefault();
-        if (e.shiftKey) doRedo(); else doUndo();
-        return;
+      if (kk === 'z' || kk === 'y') {
+        var wantRedo = kk === 'y' || e.shiftKey;
+        /* 正在文字段落裡：復原這一段的文字（打字、標記、貼上…）。
+           絕對不能交給瀏覽器 —— 它不知道標記這件事，按下去會刪掉整段打好的字。
+           標題、搜尋框這種一般輸入框就照瀏覽器原本的行為。 */
+        var troot = editing && Ink.mode === 'select' ? Editor.currentRoot() : null;
+        if (troot) {
+          e.preventDefault();
+          if (e.isComposing) return;              // 注音組字中不要動
+          var did = wantRedo ? Editor.History.redo(troot) : Editor.History.undo(troot);
+          if (!did) toast(wantRedo ? '沒有可以重做的了' : '這一段沒有可以復原的了');
+          return;
+        }
+        if (!editing || Ink.mode !== 'select') {
+          e.preventDefault();
+          if (wantRedo) doRedo(); else doUndo();
+          return;
+        }
       }
-      if (kk === 'y' && inkScope) { e.preventDefault(); doRedo(); return; }
     }
 
     if (editing) return;
@@ -1727,6 +1762,7 @@
   Voice.onFinal = function (t) {
     var root = (Voice.target && document.contains(Voice.target)) ? Voice.target : currentTextRoot();
     Voice.target = root;
+    Editor.History.checkpoint(root);       // 每一句語音自己算一步
     Editor.insertTextAt(root, t);
     root.dispatchEvent(new Event('input'));
     $('#voiceText').textContent = '聆聽中…';

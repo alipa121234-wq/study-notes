@@ -457,6 +457,7 @@
 
   /* ---------- 復原 / 重做 ---------- */
   function pushHistory(entry) {
+    entry.at = Date.now();          // 工具列的 ↶ 要跟文字的復原排先後
     Ink.history.push(entry);
     if (Ink.history.length > 300) Ink.history.shift();
     Ink.redoStack.length = 0;      // 有新動作就不能再重做
@@ -474,6 +475,8 @@
 
   Ink.canUndo = function () { return Ink.history.length > 0; };
   Ink.canRedo = function () { return Ink.redoStack.length > 0; };
+  Ink.topAt = function () { var h = Ink.history[Ink.history.length - 1]; return h ? (h.at || 0) : -1; };
+  Ink.redoTopAt = function () { var h = Ink.redoStack[Ink.redoStack.length - 1]; return h ? (h.at || 0) : -1; };
   Ink.resetHistory = function () { Ink.history = []; Ink.redoStack = []; };
 
   Ink.undo = function (findBlock, rerender) {

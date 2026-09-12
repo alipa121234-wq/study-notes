@@ -309,5 +309,186 @@
       .replace(/\u00A0/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
   };
 
+  /* ============================================================
+     文字段落的復原／重做
+     不能交給瀏覽器內建的復原：螢光筆、字色是程式直接改 DOM 的，
+     瀏覽器的復原紀錄不知道有這件事。標錯顏色按 Ctrl+Z，它復原的是
+     它記得的上一個動作 —— 使用者打的那一整段字，標記反而留著。
+     所以每個文字段落自己記一份快照紀錄：
+       連續打字（間隔 1.2 秒內）合併成一步，跟一般編輯器一樣；
+       標記、貼上、語音、填空這種「一次到位」的改動，前面先 checkpoint，自己算一步。
+     每一步都帶時間，工具列的 ↶ 才能跟筆跡的復原排出先後。
+     ============================================================ */
+  var GROUP_MS = 1200, LIMIT = 100;
+  /* 用區塊 id 當 key，不用元素本身：新增圖片、移動區塊時整頁會重新繪製，
+     文字段落的元素整個換新。用元素當 key 的話紀錄就跟著舊元素一起丟了，
+     打完字插一張圖，回來按 Ctrl+Z 會完全沒反應。 */
+  var states = new Map();       // 區塊 id -> 狀態（st.root 指向目前畫面上的那個元素）
+  var keyOf = new WeakMap();    // 元素 -> 區塊 id
+
+  function textOffset(root, node, off) {
+    var r = document.createRange();
+    r.selectNodeContents(root);
+    try { r.setEnd(node, off); } catch (e) { return 0; }
+    return r.toString().length;
+  }
+  function snap(root) {
+    var o = { html: root.innerHTML, s: -1, e: -1, at: 0 };
+    var sel = global.getSelection();
+    if (sel && sel.rangeCount) {
+      var rg = sel.getRangeAt(0);
+      if (root.contains(rg.startContainer) && root.contains(rg.endContainer)) {
+        o.s = textOffset(root, rg.startContainer, rg.startOffset);
+        o.e = textOffset(root, rg.endContainer, rg.endOffset);
+      }
+    }
+    return o;
+  }
+  function pointAt(root, n) {
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), t, last = null;
+    while ((t = w.nextNode())) {
+      if (n <= t.nodeValue.length) return [t, n];
+      n -= t.nodeValue.length;
+      last = t;
+    }
+    return last ? [last, last.nodeValue.length] : [root, root.childNodes.length];
+  }
+  /* 復原標記時連選取範圍一起放回去，使用者可以馬上改標正確的顏色 */
+  function restoreSel(root, o) {
+    var sel = global.getSelection();
+    if (!sel) return;
+    try {
+      var a, b;
+      if (o.s < 0) { a = b = pointAt(root, 1e9); }
+      else { a = pointAt(root, o.s); b = pointAt(root, o.e); }
+      var r = document.createRange();
+      r.setStart(a[0], a[1]); r.setEnd(b[0], b[1]);
+      sel.removeAllRanges(); sel.addRange(r);
+    } catch (e) { /* 位置失效就算了，內容已經還原 */ }
+  }
+
+  function stateOf(root) {
+    if (!root) return null;
+    var st = states.get(keyOf.get(root));
+    return st && st.root === root ? st : null;
+  }
+  function push(stack, o) { stack.push(o); if (stack.length > LIMIT) stack.shift(); }
+  function notify() { if (History.onChange) History.onChange(); }
+
+  /* DOM 被改過卻沒觸發 input（有些程式路徑會這樣）：先補記下來，
+     否則復原時會連那次改動一起跳過 */
+  function sync(root, st) {
+    if (root.innerHTML === st.base.html) return;
+    var b = st.base; b.at = Date.now();
+    push(st.undo, b);
+    st.redo = [];
+    st.base = snap(root);
+  }
+
+  function onInput(root) {
+    var st = stateOf(root);
+    if (!st || st.restoring) return;
+    if (root.innerHTML === st.base.html) return;       // 只有游標動、內容沒變
+    var now = Date.now();
+    if (st.breakNext || now - st.t > GROUP_MS) {
+      var b = st.base; b.at = now;
+      push(st.undo, b);
+      st.breakNext = st.breakAfter;
+      st.breakAfter = false;
+    }
+    st.redo = [];
+    st.base = snap(root);
+    st.t = now;
+    notify();
+  }
+
+  function apply(root, st, o) {
+    st.restoring = true;
+    root.innerHTML = o.html;
+    try { root.focus({ preventScroll: true }); } catch (e) { root.focus(); }
+    restoreSel(root, o);
+    /* 讓 app 的 input 監聽照常更新 b.html、存檔、空白提示；restoring 擋住自己不重記 */
+    root.dispatchEvent(new Event('input', { bubbles: true }));
+    st.restoring = false;
+    st.base = { html: root.innerHTML, s: o.s, e: o.e, at: 0 };
+    st.t = 0;
+    st.breakNext = true;
+    notify();
+  }
+
+  var History = {
+    track: function (root, key) {
+      if (!root) return;
+      key = key || root;
+      var st = states.get(key);
+      if (st && st.root === root) return;
+      if (!st) {
+        st = { undo: [], redo: [], t: 0, breakNext: false, breakAfter: false, restoring: false };
+        states.set(key, st);
+      }
+      /* 重新繪製後接回同一份紀錄：換上新元素，目前內容當作起點 */
+      st.root = root;
+      st.base = snap(root);
+      st.breakNext = true;
+      keyOf.set(root, key);
+      root.addEventListener('input', function () { onInput(root); });
+    },
+    /* 在「一次到位」的改動之前呼叫：這次改動自己算一步，之後打的字也另起一步 */
+    checkpoint: function (root) {
+      var st = stateOf(root);
+      if (!st) return;
+      sync(root, st);
+      st.base = snap(root);
+      st.breakNext = true;
+      st.breakAfter = true;
+    },
+    undo: function (root) {
+      var st = stateOf(root);
+      if (!st) return false;
+      sync(root, st);
+      if (!st.undo.length) return false;
+      var o = st.undo.pop();
+      var cur = snap(root); cur.at = o.at;
+      push(st.redo, cur);
+      apply(root, st, o);
+      return true;
+    },
+    redo: function (root) {
+      var st = stateOf(root);
+      if (!st || !st.redo.length) return false;
+      var o = st.redo.pop();
+      var cur = snap(root); cur.at = o.at;
+      push(st.undo, cur);
+      apply(root, st, o);
+      return true;
+    },
+    /* 所有段落裡「下一個該復原／重做的」是哪一段、那一步是什麼時候做的。
+       復原挑最晚做的；重做挑最早被復原的（復原是從新到舊一路退回去的，
+       最後被復原的那一步時間最早）。 */
+    pick: function (kind) {
+      var best = null;
+      states.forEach(function (st) {
+        var root = st.root;
+        if (!root || !document.contains(root)) return;   // 那篇筆記目前沒開著
+        var s = kind === 'redo' ? st.redo : st.undo;
+        if (!s.length) return;
+        var at = s[s.length - 1].at;
+        if (!best || (kind === 'redo' ? at < best.at : at > best.at)) best = { root: root, at: at };
+      });
+      return best;
+    },
+    onChange: null
+  };
+  Editor.History = History;
+
+  /* iPad 的三指滑動、搖一搖、鍵盤上的復原鍵走的是 beforeinput，不是 keydown */
+  document.addEventListener('beforeinput', function (e) {
+    if (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo') return;
+    var root = editableRoot(e.target);
+    if (!stateOf(root) || !e.cancelable) return;   // 攔不下來就別跟瀏覽器重複做
+    e.preventDefault();
+    if (e.inputType === 'historyUndo') History.undo(root); else History.redo(root);
+  }, true);
+
   global.Editor = Editor;
 })(window);
