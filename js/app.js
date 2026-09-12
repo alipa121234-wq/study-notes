@@ -110,7 +110,7 @@
     $('.d', el).textContent = new Date(n.updatedAt).toLocaleDateString('zh-TW');
     if (showFolder) {
       var f = folderById(n.folderId);
-      $('.fold', el).textContent = '📁 ' + (f ? f.name : '未分類');
+      $('.fold', el).textContent = '📁 ' + (f ? f.name : uncatName());
     }
 
     el.addEventListener('click', function (e) {
@@ -168,7 +168,7 @@
       (due ? '<span class="due">' + due + '</span>' : '') +
       '<button class="more" title="資料夾選單">⋯</button>';
     if (f) $('.dot', row).style.background = f.color;
-    var displayName = f ? f.name : (localStorage.getItem('sn_uncategorizedName') || '未分類');
+    var displayName = f ? f.name : (uncatName());
     $('.nm', row).textContent = displayName;
 
     row.addEventListener('click', function (e) {
@@ -262,7 +262,7 @@
       saveCollapsed();
       renderList();
       var f = folderById(folderId);
-      toast('已移到「' + (f ? f.name : '未分類') + '」');
+      toast('已移到「' + (f ? f.name : uncatName()) + '」');
     });
   }
 
@@ -329,7 +329,7 @@
       });
     });
     items.push({
-      label: '未分類', dot: '#D8D2C8', on: !n.folderId,
+      label: uncatName(), dot: '#D8D2C8', on: !n.folderId,
       fn: function () { moveNote(n.id, null); }
     });
     items.push('-');
@@ -352,7 +352,7 @@
     items.push('-');
     items.push({
       label: '✏️ 重新命名', fn: function () {
-        var currentName = f ? f.name : (localStorage.getItem('sn_uncategorizedName') || '未分類');
+        var currentName = f ? f.name : (uncatName());
         promptModal('資料夾名稱', currentName).then(function (name) {
           if (name === null) return;
           name = name.trim();
@@ -363,6 +363,7 @@
           } else {
             // 改名「未分類」，存在 localStorage
             localStorage.setItem('sn_uncategorizedName', name);
+            localStorage.setItem('sn_uncategorizedNameAt', String(Date.now()));   // 合併備份時比新舊
             renderList();
             toast('已改名為「' + name + '」');
           }
@@ -2481,6 +2482,26 @@
 
      判斷只靠兩台裝置的時鐘。時區設錯的話「誰比較新」會判斷錯 ——
      所以套用前一定先給使用者看清單，而且留一個還原點。 */
+  /* 「未分類」可以改名，但它不是真的資料夾，名稱只存在這台裝置的 localStorage，
+     以前也沒寫進備份檔 —— 在筆電把「未分類」改成「Davinci」，匯到 iPhone 還是「未分類」。
+     現在名稱和修改時間都跟著備份檔走，匯入時跟資料夾一樣比新舊。 */
+  function uncatInfo() {
+    var name = localStorage.getItem('sn_uncategorizedName');
+    if (!name) return null;
+    return { name: name, at: +(localStorage.getItem('sn_uncategorizedNameAt') || 0) };
+  }
+  function uncatName() { var u = uncatInfo(); return u ? u.name : '未分類'; }
+  function setUncat(u) {
+    if (u && u.name) {
+      localStorage.setItem('sn_uncategorizedName', u.name);
+      if (u.at) localStorage.setItem('sn_uncategorizedNameAt', String(u.at));
+      else localStorage.removeItem('sn_uncategorizedNameAt');
+    } else {
+      localStorage.removeItem('sn_uncategorizedName');
+      localStorage.removeItem('sn_uncategorizedNameAt');
+    }
+  }
+
   function mergePlan(data, localNotes, localFolders) {
     var inNotes = data.notes || data;
     var inFolders = data.folders || [];
@@ -2491,7 +2512,7 @@
        而不是 0，時間就變成 Invalid Date。一定要確認型別。 */
     var p = {
       add: [], update: [], keep: [], same: [], folders: [],
-      folderUpdate: [], folderKeep: [], folderConflict: [], localOnly: [],
+      folderUpdate: [], folderKeep: [], folderConflict: [], localOnly: [], uncat: null,
       at: typeof data.at === 'number' ? data.at : 0
     };
     inNotes.forEach(function (f) {
@@ -2524,6 +2545,20 @@
     var inIds = {};
     inNotes.forEach(function (n) { inIds[n.id] = 1; });
     localNotes.forEach(function (n) { if (!inIds[n.id]) p.localOnly.push({ f: n }); });
+
+    /* 「未分類」的名稱：規則跟資料夾一樣。本機從沒改過名就直接用檔案的 */
+    var fu = data.uncat && data.uncat.name ? data.uncat : null;
+    if (fu) {
+      var lu = uncatInfo();
+      var lname = lu ? lu.name : '未分類';
+      if (fu.name !== lname) {
+        var la = (lu && lu.at) || 0, fa = fu.at || 0;
+        var kind = !lu ? 'update'
+          : (la && fa) ? (fa > la ? 'update' : 'keep')
+          : fa ? 'update' : la ? 'keep' : 'conflict';
+        p.uncat = { kind: kind, f: { name: fu.name, at: fa }, l: lu };
+      }
+    }
     return p;
   }
 
@@ -2582,6 +2617,22 @@
         '" checked style="vertical-align:middle;margin:0 6px 0 0">改用備份檔的' + change(x) +
         '<span style="color:#8A8680">（不勾 = 維持本機的）</span></label>';
     });
+    if (p.uncat) {
+      var U = p.uncat, from = fname({ name: U.l ? U.l.name : '未分類' }), to = fname({ name: U.f.name });
+      if (U.kind === 'update') {
+        rows.push('<div style="margin:10px 0 4px;font-weight:700;color:#4CAF8E">「未分類」的名稱</div>' +
+          '<div style="font-size:12.5px;color:#5A564F">　' + from + ' → ' + to + '</div>');
+      } else if (U.kind === 'keep') {
+        rows.push('<div style="margin:10px 0 4px;font-weight:700;color:#E8A33D">「未分類」的名稱保留本機的（本機比較新）</div>' +
+          '<div style="font-size:12.5px;color:#5A564F">　' + from +
+          '<span style="color:#8A8680">　備份檔裡叫' + to + '</span></div>');
+      } else {
+        rows.push('<div style="margin:10px 0 4px;font-weight:700;color:#C25B4E">「未分類」的名稱不一樣，分不出哪邊比較新，請選</div>' +
+          '<div style="font-size:12.5px;color:#5A564F">　<label style="cursor:pointer">' +
+          '<input type="checkbox" class="uconf" checked style="vertical-align:middle;margin:0 6px 0 0">' +
+          '改用備份檔的' + from + ' → ' + to + '<span style="color:#8A8680">（不勾 = 維持本機的）</span></label></div>');
+      }
+    }
     sec(p.localOnly, '只有本機有（備份檔裡沒有，保留不動）', '#8A8680', function () {
       return '';
     });
@@ -2590,7 +2641,8 @@
         '如果是在另一台刪掉的，匯入後請在這台手動刪除。</div>');
     }
     var willChange = p.add.length + p.update.length + p.folders.length +
-      p.folderUpdate.length + p.folderConflict.length;
+      p.folderUpdate.length + p.folderConflict.length +
+      (p.uncat && p.uncat.kind !== 'keep' ? 1 : 0);
 
     openModal('要套用這些變更嗎？',
       '<p style="font-size:12.5px;color:#8A8680;margin:0 0 6px">' +
@@ -2615,15 +2667,20 @@
       return cb && cb.checked;
     });
     var fUpd = p.folderUpdate.concat(chosen);
+    var ucb = $('#modalBody input.uconf');
+    var uncatTake = p.uncat && (p.uncat.kind === 'update' || (p.uncat.kind === 'conflict' && ucb && ucb.checked));
     var undo = {
       added: p.add.map(function (x) { return x.f.id; }),
       updated: p.update.map(function (x) { return x.l; }),   // 覆蓋前的本機版本
       folders: p.folders.map(function (x) { return x.id; }),
       folderPrev: fUpd.map(function (x) { return x.l; }),   // 資料夾被改名／換色前的本機版本
+      uncatChanged: !!uncatTake,
+      uncatPrev: uncatInfo(),
       at: Date.now()
     };
     var put = p.add.concat(p.update).map(function (x) { return x.f; });
     var fput = p.folders.concat(fUpd.map(function (x) { return x.f; }));
+    if (uncatTake) setUncat(p.uncat.f);     // 在 reloadAll 重畫側欄之前寫好
     Store.putMany(put)
       .then(function () { return fput.length ? Store.putFolders(fput) : null; })
       .then(reloadAll)
@@ -2646,6 +2703,7 @@
         return Promise.all(u.folders.map(function (id) { return Store.delFolder(id); }));
       })
       .then(function () { return u.folderPrev && u.folderPrev.length ? Store.putFolders(u.folderPrev) : null; })
+      .then(function () { if (u.uncatChanged) setUncat(u.uncatPrev); })
       .then(reloadAll)
       .then(function () {
         lastMerge = null;
@@ -2680,7 +2738,7 @@
         '_' + pad(d.getHours()) + pad(d.getMinutes()) +
         '_' + r[0].length + '篇.json';
       var blob = new Blob(
-        [JSON.stringify({ v: 2, at: Date.now(), notes: r[0], folders: r[1] })],
+        [JSON.stringify({ v: 2, at: Date.now(), notes: r[0], folders: r[1], uncat: uncatInfo() })],
         { type: 'application/json' });
       var o = { blob: blob, name: name, n: r[0].length };
       try { o.file = new File([blob], name, { type: 'application/json' }); } catch (e) { }
