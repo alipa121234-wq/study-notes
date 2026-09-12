@@ -364,7 +364,11 @@ body.side-open #sideMask{display:block;}
   background:#fff;border:1px solid var(--line);border-radius:12px;
   box-shadow:0 8px 24px rgba(0,0,0,.18);
 }
-#selbar.on{display:flex;}
+#selbar.on{display:flex;flex-direction:column;}
+#selbar .sel-row{display:flex;gap:4px;}
+#selbar .grp{margin-left:6px;}
+#selbar button.fcA{font-weight:800;font-size:16px;}
+#selbar button.sz{font-weight:700;font-size:13px;width:38px;}
 #selbar button{
   width:32px;height:32px;border-radius:9px;border:1px solid var(--line);
   background:#fff;font-size:14px;cursor:pointer;padding:0;
@@ -457,3 +461,9 @@ body{
 #speakbar .sp-n{font-weight:700;white-space:nowrap;}
 #speakbar .sp-t{color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1;}
 #speakbar .sp-slow.on{background:var(--accent-soft);}
+
+/* 字級：小／大／更大／特大（正常不包標籤） */
+.content .fs-1{font-size:.85em;}
+.content .fs-2{font-size:1.25em;}
+.content .fs-3{font-size:1.5em;}
+.content .fs-4{font-size:1.9em;}

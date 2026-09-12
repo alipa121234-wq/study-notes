@@ -93,7 +93,8 @@
   }
 
   function stripKind(el, kind) {
-    var re = kind === 'hl' ? /^hl(-\d)?$/ : /^fc(-\d)?$/;
+    /* kind 只會是程式裡寫死的 hl（螢光筆）／fc（字色）／fs（字級） */
+    var re = new RegExp('^' + kind + '(-\\d)?$');
     var list = [el].concat(el.nodeType === 1 ? Array.prototype.slice.call(el.querySelectorAll('*')) : []);
     list.forEach(function (e) {
       if (e.nodeType !== 1 || !e.classList) return;
@@ -163,6 +164,54 @@
       }
     } catch (e) { /* ignore */ }
     return true;
+  };
+
+  /* ---------- 字級 ----------
+     小／正常／大／更大／特大 五段。「正常」不包任何標籤，
+     其他各段對應 fs-1 ~ fs-4（fs-1 是「小」）。
+     跟螢光筆一樣走 Editor.mark，所以巢狀、切割、清除的規則都一致；
+     出考題只認 .hl，字級不會影響題目。 */
+  var SIZE_CLASS = [1, 0, 2, 3, 4];
+  var SIZE_NAME = ['小', '正常', '大', '更大', '特大'];
+  function sizeLevelOf(node, root) {
+    var el = node && node.nodeType === 3 ? node.parentNode : node;
+    while (el && el !== root) {
+      if (el.classList && el.classList.contains('fs')) {
+        var m = el.className.match(/\bfs-(\d)\b/);
+        var k = m ? SIZE_CLASS.indexOf(+m[1]) : -1;
+        if (k >= 0) return k;
+      }
+      el = el.parentNode;
+    }
+    return 1;
+  }
+  /**
+   * 選取的字變大（delta=1）或變小（delta=-1）一段。
+   * 以選取開頭那個字目前的大小為準，整段套成同一個大小。
+   * @return null（沒有選取）或 { level, name, same }
+   */
+  Editor.stepSize = function (delta) {
+    var sel = global.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+    var range = sel.getRangeAt(0);
+    var root = editableRoot(range.startContainer);
+    if (!root) return null;
+    var first = null, sc = range.startContainer;
+    if (sc.nodeType === 3 && range.startOffset < sc.nodeValue.length && sc.nodeValue.slice(range.startOffset).trim()) {
+      first = sc;
+    } else {
+      var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), n;
+      while ((n = w.nextNode())) {
+        if (range.intersectsNode(n) && n.nodeValue.trim() &&
+          !(n === sc && range.startOffset >= n.nodeValue.length)) { first = n; break; }
+      }
+    }
+    if (!first) return null;
+    var cur = sizeLevelOf(first, root);
+    var next = Math.max(0, Math.min(SIZE_NAME.length - 1, cur + delta));
+    if (next === cur) return { level: cur, name: SIZE_NAME[cur], same: true };
+    if (!Editor.mark('fs', SIZE_CLASS[next])) return null;
+    return { level: next, name: SIZE_NAME[next], same: false };
   };
 
   Editor.clearMarks = function () {

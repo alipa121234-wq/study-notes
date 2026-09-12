@@ -1250,6 +1250,13 @@
     var savedRange = null;      // iOS 上點按鈕會把選取收掉，先存起來待會還原
     var LABEL = ['挖空填空', '名詞解釋', '易錯重點', '整句問答', '只標記'];
 
+    /* 兩排：上排螢光筆（出題用）＋朗讀，下排文字顏色＋字級。
+       一排塞不下，iPhone 寬度會被擠出畫面。 */
+    var row1 = document.createElement('div'), row2 = document.createElement('div');
+    row1.className = row2.className = 'sel-row';
+    bar.appendChild(row1);
+    bar.appendChild(row2);
+
     for (var i = 1; i <= 5; i++) {
       (function (n) {
         var b = document.createElement('button');
@@ -1257,36 +1264,69 @@
         b.title = LABEL[n - 1];
         b.textContent = n;
         onTap(b, function () { applySel('hl', n); });
-        bar.appendChild(b);
+        row1.appendChild(b);
       })(i);
     }
     var clr = document.createElement('button');
     clr.textContent = '✕';
-    clr.title = '清除標記';
+    clr.title = '清除螢光筆和文字顏色';
     onTap(clr, function () { applySel('hl', 0); });
-    bar.appendChild(clr);
+    row1.appendChild(clr);
+
+    /* 文字顏色：原本只有鍵盤 Alt+Shift+1~5 能用，iPad 上沒有入口 */
+    var FC_NAME = ['黑', '紅', '藍', '綠', '橘'];
+    for (var j = 1; j <= 5; j++) {
+      (function (n) {
+        var b = document.createElement('button');
+        b.className = 'fcA fc-' + n;
+        b.title = '文字顏色：' + FC_NAME[n - 1];
+        b.textContent = 'A';
+        onTap(b, function () { applySel('fc', n); });
+        row2.appendChild(b);
+      })(j);
+    }
+    /* 字級：按了不收起浮動列、選取也留著，才能連按好幾下 */
+    [['A−', -1, '字變小'], ['A+', 1, '字變大']].forEach(function (d, k) {
+      var b = document.createElement('button');
+      b.className = 'sz' + (k === 0 ? ' grp' : '');
+      b.textContent = d[0];
+      b.title = d[2] + '（桌機：Alt+' + (d[1] > 0 ? '=' : '-') + '）';
+      onTap(b, function () { applySize(d[1]); });
+      row2.appendChild(b);
+    });
     /* 背單字最常想知道的就是「這個字怎麼念」。
        念完不收起色條、不動選取，方便馬上再按一次放慢念。 */
     if (window.Speak && Speak.supported) {
       var spk = document.createElement('button');
       spk.textContent = '🔊';
       spk.title = '朗讀（三秒內再按一次會放慢）';
+      spk.className = 'grp';
       onTap(spk, function () { speakSelection(savedRange); });
-      bar.appendChild(spk);
+      row1.appendChild(spk);
       var rep = document.createElement('button');
       rep.textContent = '🔁';
       rep.title = '重複播放（中英文都念，按停止才停）';
       onTap(rep, function () { loopSelection(savedRange); });
-      bar.appendChild(rep);
+      row1.appendChild(rep);
     }
 
-    function applySel(kind, n) {
-      /* 就算前面擋不住，這裡再把選取範圍放回去 —— 不然套用時
-         選取是空的，按了完全沒反應（顏色不會出現） */
+    /* 就算前面擋不住，這裡再把選取範圍放回去 —— 不然套用時
+       選取是空的，按了完全沒反應（顏色不會出現） */
+    function restoreSaved() {
       var sel = window.getSelection();
       if (savedRange && (!sel.rangeCount || sel.isCollapsed)) {
         try { sel.removeAllRanges(); sel.addRange(savedRange); } catch (e) { /* 已失效 */ }
       }
+    }
+    function applySize(delta) {
+      restoreSaved();
+      changeSize(delta);
+      /* 包上新標籤後舊的範圍會失效，換成 mark() 重新選好的那個 */
+      var s2 = window.getSelection();
+      if (s2.rangeCount && !s2.isCollapsed) savedRange = s2.getRangeAt(0).cloneRange();
+    }
+    function applySel(kind, n) {
+      restoreSaved();
       var root = Editor.currentRoot();
       if (root) Editor.History.checkpoint(root);
       if (n) Editor.mark(kind, n); else Editor.clearMarks();
@@ -1639,6 +1679,12 @@
         } else if (n > 0) Ink.setColor(n - 1);
         return;
       }
+      /* Alt+= / Alt+-：選取的字變大／變小 */
+      if (code === 'Equal' || code === 'Minus' || code === 'NumpadAdd' || code === 'NumpadSubtract') {
+        e.preventDefault();
+        if (editing) changeSize(code === 'Equal' || code === 'NumpadAdd' ? 1 : -1);
+        return;
+      }
       /* 用 e.code 不用 e.key：Mac／iPad 鍵盤按 Option+R 得到的 key 是「®」 */
       if (code === 'KeyR') {
         e.preventDefault();
@@ -1901,6 +1947,18 @@
     el.addEventListener('click', function () { if (!viaTouch) fn(); });
     /* 滑鼠按下時不要讓選取／焦點消失（桌機） */
     el.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  }
+
+  /* ---------- 字級 ---------- */
+  function changeSize(delta) {
+    var root = Editor.currentRoot();
+    if (!root) { toast('先選取要改大小的字'); return null; }
+    Editor.History.checkpoint(root);          // 改字級自己算一步，Ctrl+Z 可以復原
+    var r = Editor.stepSize(delta);
+    if (!r) { toast('先選取要改大小的字'); return null; }
+    if (r.same) { toast(delta > 0 ? '已經是最大了' : '已經是最小了'); return r; }
+    root.dispatchEvent(new Event('input'));
+    return r;
   }
 
   /* ---------- 朗讀 ---------- */
