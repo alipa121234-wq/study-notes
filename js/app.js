@@ -2715,6 +2715,104 @@
     markBackedUp(o.n);
   }
 
+  /* ---------- 備份到雲端資料夾（電腦版 Chrome／Edge） ----------
+     電腦上的分享選單只允許圖片、PDF、純文字這類檔案，.json 會被擋，
+     原本就這樣默默退回成「下載」，按鈕卻寫「雲端」。
+     改用瀏覽器的資料夾存取：選一次 OneDrive／Google 雲端硬碟裡的資料夾，
+     之後直接把備份檔寫進去，同步程式會自動傳到雲端。
+     資料夾的存取權杖可以存進 IndexedDB，但不跟筆記放同一個資料庫 ——
+     那要升級資料庫版本，出錯會卡住筆記的讀取。另開一個小資料庫專門放它。 */
+  var HandleDB = {
+    _p: null,
+    open: function () {
+      if (!this._p) this._p = new Promise(function (res, rej) {
+        var r = indexedDB.open('studynote-handles', 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore('kv'); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+      return this._p;
+    },
+    req: function (mode, fn) {
+      return this.open().then(function (db) {
+        return new Promise(function (res, rej) {
+          var q = fn(db.transaction('kv', mode).objectStore('kv'));
+          q.onsuccess = function () { res(q.result == null ? null : q.result); };
+          q.onerror = function () { rej(q.error); };
+        });
+      });
+    },
+    get: function (k) { return this.req('readonly', function (s) { return s.get(k); }); },
+    set: function (k, v) { return this.req('readwrite', function (s) { return s.put(v, k); }); },
+    del: function (k) { return this.req('readwrite', function (s) { return s.delete(k); }); }
+  };
+  var canFolder = typeof window.showDirectoryPicker === 'function';
+
+  function pickBackupDir() {
+    return window.showDirectoryPicker({ id: 'studynote-backup', mode: 'readwrite' })
+      .then(function (dir) { return HandleDB.set('backupDir', dir).then(function () { return dir; }); });
+  }
+  /* 瀏覽器重開之後權限會回到「要再問一次」，要在按鈕的點擊裡重新要 */
+  function backupDir(forcePick) {
+    if (forcePick) return pickBackupDir();
+    return HandleDB.get('backupDir').then(function (dir) {
+      if (!dir) return pickBackupDir();
+      return dir.queryPermission({ mode: 'readwrite' }).then(function (st) {
+        if (st === 'granted') return dir;
+        return dir.requestPermission({ mode: 'readwrite' }).then(function (st2) {
+          if (st2 === 'granted') return dir;
+          var err = new Error('沒有取得資料夾的寫入權限');
+          err.name = 'NotAllowedError';
+          throw err;
+        });
+      });
+    });
+  }
+  function saveBackupToFolder(forcePick) {
+    /* 兩件事同時開始：權限／選資料夾一定要在點擊當下發出，不能等備份檔做完 */
+    return Promise.all([pending || buildBackup(), backupDir(forcePick)]).then(function (r) {
+      var o = r[0], dir = r[1];
+      return dir.getFileHandle(o.name, { create: true })
+        .then(function (fh) { return fh.createWritable(); })
+        .then(function (w) { return w.write(o.blob).then(function () { return w.close(); }); })
+        .then(function () {
+          markBackedUp(o.n);
+          closeModal();
+          toast('已存到「' + dir.name + '」資料夾（' + o.n + ' 篇筆記）');
+        });
+    }).catch(function (err) {
+      if (err && err.name === 'AbortError') return;          // 選資料夾時按了取消
+      if (err && err.name === 'NotFoundError') {
+        HandleDB.del('backupDir');
+        toast('原本的備份資料夾找不到了（可能被移動或刪除），請再按一次重新選');
+        return;
+      }
+      if (err && err.name === 'NotAllowedError') {
+        toast('沒有取得資料夾的寫入權限。再按一次，跳出詢問時選「允許」');
+        return;
+      }
+      toast('存到資料夾失敗（' + ((err && err.message) || err) + '），先改成下載到本機');
+      (pending || buildBackup()).then(downloadBackup);
+    });
+  }
+  function fillBackupDirLine() {
+    var line = $('#bkDirLine');
+    if (!line || !canFolder) return;
+    HandleDB.get('backupDir').then(function (dir) {
+      if (!line.isConnected) return;
+      if (!dir) {
+        line.innerHTML = '還沒選過備份資料夾，<b>第一次按會請你選</b>。';
+        return;
+      }
+      line.innerHTML = '目前存到「<b>' + esc(dir.name) + '</b>」資料夾　' +
+        '<a href="#" id="bkChange" style="color:var(--accent)">換資料夾</a>';
+      $('#bkChange').addEventListener('click', function (e) {
+        e.preventDefault();
+        saveBackupToFolder(true);
+      });
+    }).catch(function () { line.textContent = ''; });
+  }
+
   $('#btnBackup').addEventListener('click', function () {
     buildBackup();
     var lb = lastBackup();
@@ -2723,42 +2821,65 @@
       : (days >= 7 ? '<b style="color:#C25B4E">上次備份是 ' + days + ' 天前</b>（' : '上次備份：')
       + new Date(lb.at).toLocaleString('zh-TW') + (days >= 7 ? '）' : '');
 
-    /* 分享選單裡 iCloud 雲碟、Google Drive、OneDrive 都會出現（裝了對應的
-       App 就會註冊成「檔案」的位置），所以不需要各自串 API、也不必碰任何
-       帳號憑證。桌機沒有這個選單，退回一般下載。 */
-    var canShare = !!(navigator.canShare && navigator.share);
+    /* 三種情況，打開視窗時就判斷好，按鈕名稱要跟實際行為一致：
+       1. 電腦 Chrome／Edge：直接寫進使用者選的雲端硬碟資料夾
+       2. iPad／iPhone：系統分享選單 → 儲存到檔案 → iCloud／Google Drive／OneDrive
+       3. 都不行：老實寫「下載」，說明檔案會在「下載」資料夾
+       分享要先用同名同型別的檔案試 canShare —— 光看 navigator.share 存在不夠，
+       電腦版 Chrome 有分享功能，但不允許分享 .json。 */
+    var canShareFile = false;
+    try {
+      canShareFile = !!(navigator.canShare && navigator.share &&
+        navigator.canShare({ files: [new File(['{}'], 'backup.json', { type: 'application/json' })] }));
+    } catch (e) { canShareFile = false; }
     var acts = [];
-    if (canShare) {
-      acts.push(btn('☁️ 備份到雲端', 'btn-primary', function (e) {
+    if (canFolder) {
+      acts.push(btn('☁️ 備份到雲端資料夾', 'btn-primary', function () { saveBackupToFolder(false); }));
+    } else if (canShareFile) {
+      acts.push(btn('☁️ 備份到雲端', 'btn-primary', function () {
         var o = pending && pending.ready;
         var go = function (o) {
           if (!o || !o.file || !navigator.canShare({ files: [o.file] })) {
-            downloadBackup(o); return;
+            downloadBackup(o);
+            toast('這台裝置不能直接分享備份檔，已改成下載到本機');
+            return;
           }
           navigator.share({ files: [o.file], title: o.name })
             .then(function () { markBackedUp(o.n); toast('已備份 ' + o.n + ' 篇筆記'); })
             .catch(function (err) {
               if (err && err.name === 'AbortError') return;   // 使用者自己取消
               downloadBackup(o);
+              toast('分享沒有成功，已改成下載到本機');
             });
         };
         if (o) go(o); else pending.then(go);   // 還沒做完只好等，iOS 可能會擋
       }));
     }
-    acts.push(btn(canShare ? '⬇ 改成下載檔案' : '⬇ 匯出全部筆記',
-      canShare ? '' : 'btn-primary', function () {
-        var o = pending && pending.ready;
-        if (o) downloadBackup(o); else pending.then(downloadBackup);
-      }));
+    var cloud = canFolder || canShareFile;
+    acts.push(btn(cloud ? '⬇ 只下載到本機' : '⬇ 下載備份檔', cloud ? '' : 'btn-primary', function () {
+      var o = pending && pending.ready;
+      if (o) downloadBackup(o); else pending.then(downloadBackup);
+    }));
+
+    var how = canFolder
+      ? '<p style="font-size:12.5px;color:#8A8680">' +
+        '按「備份到雲端資料夾」，第一次會請你選一個資料夾：選 <b>OneDrive</b> 或 ' +
+        '<b>Google 雲端硬碟</b>裡的資料夾（例如新建一個「讀書筆記備份」），' +
+        '同步程式會自動把檔案傳到雲端。之後按一下就直接存進去。' +
+        '檔名有日期時間，不會蓋掉舊的。<br><span id="bkDirLine"></span></p>'
+      : canShareFile
+        ? '<p style="font-size:12.5px;color:#8A8680">' +
+          '按「備份到雲端」會跳出分享選單，選<b>「儲存到檔案」</b>之後就能存到 ' +
+          '<b>iCloud 雲碟／Google Drive／OneDrive</b>（要先裝好對應的 App）。' +
+          '檔名有日期時間，不會蓋掉舊的。</p>'
+        : '<p style="font-size:12.5px;color:#8A8680">' +
+          '這個瀏覽器不能直接存到雲端。按「下載備份檔」會存到<b>「下載」資料夾</b>，' +
+          '再自己搬到 OneDrive／Google 雲端硬碟。</p>';
 
     openModal('備份 / 還原',
       '<p style="font-size:13px;color:#8A8680">' + when + '<br>' +
       '筆記只存在這台裝置的瀏覽器裡，沒有自動同步 —— ' +
-      '換裝置或清除瀏覽器資料前一定要先備份。</p>' +
-      (canShare ? '<p style="font-size:12.5px;color:#8A8680">' +
-        '按「備份到雲端」會跳出分享選單，選<b>「儲存到檔案」</b>之後就能存到 ' +
-        '<b>iCloud 雲碟／Google Drive／OneDrive</b>（要先裝好對應的 App）。' +
-        '每次存到同一個資料夾，檔名有日期時間不會蓋掉舊的。</p>' : ''),
+      '換裝置或清除瀏覽器資料前一定要先備份。</p>' + how,
       acts.concat([
       btn('⬆ 匯入備份檔', '', function () {
         var inp = document.createElement('input');
@@ -2811,6 +2932,7 @@
           [copyBtn, btn('關閉', '', closeModal)]);
       })
     ]));
+    fillBackupDirLine();
   });
 
   /* ============================================================
