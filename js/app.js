@@ -140,6 +140,9 @@
         Store.get(n.id).then(function (full) {
           if (!full) return;
           full.title = title;
+          /* 改名也是修改，沒有更新時間的話合併時會被判斷成「沒變」 */
+          full.updatedAt = n.updatedAt = Date.now();
+          if (note && note.id === n.id) note.updatedAt = full.updatedAt;
           return Store.put(full);
         }).then(renderList);
       });
@@ -188,7 +191,7 @@
           if (name === null) return;
           name = name.trim();
           if (!name) return;
-          f.name = name;
+          f.name = name; f.updatedAt = Date.now();
           Store.putFolder(f).then(renderList);
         });
       });
@@ -355,7 +358,7 @@
           name = name.trim();
           if (!name) return;
           if (f) {
-            f.name = name;
+            f.name = name; f.updatedAt = Date.now();
             Store.putFolder(f).then(renderList);
           } else {
             // 改名「未分類」，存在 localStorage
@@ -369,7 +372,7 @@
     if (f) {
       items.push({
         label: '🎨 換顏色', dot: f.color, fn: function () {
-          f.color = M.nextColor(f.color);
+          f.color = M.nextColor(f.color); f.updatedAt = Date.now();
           Store.putFolder(f).then(renderList);
         }
       });
@@ -383,7 +386,7 @@
               chain = chain.then(function () {
                 return Store.get(n.id).then(function (full) {
                   if (!full) return;
-                  full.folderId = null;
+                  full.folderId = null; full.updatedAt = Date.now();
                   return Store.put(full);
                 });
               });
@@ -2293,7 +2296,8 @@
       fullNotes.forEach(function (n) {
         if (!dirty[n.id]) return;
         chain = chain.then(function () {
-          if (note && n.id === note.id) { note.cards = n.cards; return Store.put(note); }
+          n.updatedAt = Date.now();     // 複習進度也算修改，另一台匯入時才帶得過去
+          if (note && n.id === note.id) { note.cards = n.cards; note.updatedAt = n.updatedAt; return Store.put(note); }
           return Store.put(n);
         });
       });
@@ -2487,6 +2491,7 @@
        而不是 0，時間就變成 Invalid Date。一定要確認型別。 */
     var p = {
       add: [], update: [], keep: [], same: [], folders: [],
+      folderUpdate: [], folderKeep: [], folderConflict: [], localOnly: [],
       at: typeof data.at === 'number' ? data.at : 0
     };
     inNotes.forEach(function (f) {
@@ -2497,10 +2502,28 @@
       else if (fu > lu) p.update.push({ f: f, l: l });
       else p.keep.push({ f: f, l: l });   // 本機比較新 —— 不覆蓋
     });
-    var have = {};
-    localFolders.forEach(function (x) { have[x.id] = 1; });
-    /* 資料夾沒有 updatedAt，分不出誰新，所以只補缺的、不動既有的 */
-    inFolders.forEach(function (x) { if (!have[x.id]) p.folders.push(x); });
+    /* 資料夾：本機沒有就新增；名稱、顏色都一樣就略過（排序差一點不算）。
+       不一樣的話比 updatedAt：兩邊都有就比誰新；只有一邊有，有記錄的那邊
+       一定是改版之後動過的，它比較新。
+       兩邊都沒有（改版前就改過名）分不出來 —— 不能默默選一邊，
+       列出來讓使用者自己勾。原本「已經有的一律不動」會讓改過的名稱永遠帶不過去。 */
+    var lf = {};
+    localFolders.forEach(function (x) { lf[x.id] = x; });
+    inFolders.forEach(function (x) {
+      var l = lf[x.id];
+      if (!l) { p.folders.push(x); return; }
+      if ((l.name || '') === (x.name || '') && (l.color || '') === (x.color || '')) return;
+      var lu = l.updatedAt || 0, fu = x.updatedAt || 0;
+      if (lu && fu) (fu > lu ? p.folderUpdate : p.folderKeep).push({ f: x, l: l });
+      else if (fu) p.folderUpdate.push({ f: x, l: l });
+      else if (lu) p.folderKeep.push({ f: x, l: l });
+      else p.folderConflict.push({ f: x, l: l });
+    });
+    /* 本機有、備份檔沒有的筆記：分不出是新寫的還是在另一台刪掉了，所以不動，
+       但要讓使用者在套用前就看到，不然匯入後才發現「怎麼多一篇」 */
+    var inIds = {};
+    inNotes.forEach(function (n) { inIds[n.id] = 1; });
+    localNotes.forEach(function (n) { if (!inIds[n.id]) p.localOnly.push({ f: n }); });
     return p;
   }
 
@@ -2535,17 +2558,46 @@
       rows.push('<div style="margin:10px 0 4px;color:#8A8680;font-size:12.5px">' +
         '內容相同、略過 ' + p.same.length + ' 篇</div>');
     }
-    if (p.folders.length) {
-      rows.push('<div style="margin:10px 0 4px;color:#5A564F;font-size:12.5px">' +
-        '新增 ' + p.folders.length + ' 個資料夾</div>');
+    function fname(x) { return '「' + esc(x.name || '未命名資料夾') + '」'; }
+    function fsec(list, label, color, line) {
+      if (!list.length) return;
+      rows.push('<div style="margin:10px 0 4px;font-weight:700;color:' + color + '">' +
+        label + ' ' + list.length + ' 個</div>' +
+        '<div style="font-size:12.5px;line-height:1.9;color:#5A564F">' +
+        list.map(function (x) { return '　' + line(x); }).join('<br>') + '</div>');
     }
-    var willChange = p.add.length + p.update.length + p.folders.length;
+    function change(x) {
+      var s = (x.l.name || '') !== (x.f.name || '')
+        ? fname(x.l) + ' → ' + fname(x.f) : fname(x.f);
+      if ((x.l.color || '') !== (x.f.color || '')) s += '<span style="color:#8A8680">（換了顏色）</span>';
+      return s;
+    }
+    fsec(p.folders.map(function (f) { return { f: f }; }), '新增資料夾', '#3D7BD6', function (x) { return fname(x.f); });
+    fsec(p.folderUpdate, '資料夾更新', '#4CAF8E', change);
+    fsec(p.folderKeep, '資料夾保留本機（本機比較新）', '#E8A33D', function (x) {
+      return fname(x.l) + '<span style="color:#8A8680">　備份檔裡叫' + fname(x.f) + '</span>';
+    });
+    fsec(p.folderConflict, '資料夾不一樣，分不出哪邊比較新，請選', '#C25B4E', function (x) {
+      return '<label style="cursor:pointer"><input type="checkbox" class="fconf" data-id="' + esc(x.f.id) +
+        '" checked style="vertical-align:middle;margin:0 6px 0 0">改用備份檔的' + change(x) +
+        '<span style="color:#8A8680">（不勾 = 維持本機的）</span></label>';
+    });
+    sec(p.localOnly, '只有本機有（備份檔裡沒有，保留不動）', '#8A8680', function () {
+      return '';
+    });
+    if (p.localOnly.length) {
+      rows.push('<div style="font-size:12px;color:#8A8680;margin:2px 0 0">　' +
+        '如果是在另一台刪掉的，匯入後請在這台手動刪除。</div>');
+    }
+    var willChange = p.add.length + p.update.length + p.folders.length +
+      p.folderUpdate.length + p.folderConflict.length;
 
     openModal('要套用這些變更嗎？',
       '<p style="font-size:12.5px;color:#8A8680;margin:0 0 6px">' +
       '備份檔匯出時間：' + (p.at ? tsText(p.at) : '（舊格式，檔案沒記錄）') + '<br>' +
       '本機比較新的筆記不會被覆蓋。套用後可以一鍵還原。</p>' +
-      (rows.join('') || '<p style="color:#8A8680">這份備份的內容跟本機完全一樣，沒有要改的。</p>'),
+      rows.join('') +
+      (willChange ? '' : '<p style="color:#8A8680">沒有需要套用的變更。</p>'),
       [
         willChange ? btn('套用（' + willChange + ' 項）', 'btn-primary', function () { applyMerge(p); }) : null,
         btn('取消', '', closeModal)
@@ -2557,15 +2609,23 @@
      只留在記憶體裡，重新載入就沒了，所以還原要趁當下。 */
   var lastMerge = null;
   function applyMerge(p) {
+    /* 視窗還開著的時候先讀勾選狀態 */
+    var chosen = p.folderConflict.filter(function (x) {
+      var cb = $('#modalBody input.fconf[data-id="' + x.f.id + '"]');
+      return cb && cb.checked;
+    });
+    var fUpd = p.folderUpdate.concat(chosen);
     var undo = {
       added: p.add.map(function (x) { return x.f.id; }),
       updated: p.update.map(function (x) { return x.l; }),   // 覆蓋前的本機版本
       folders: p.folders.map(function (x) { return x.id; }),
+      folderPrev: fUpd.map(function (x) { return x.l; }),   // 資料夾被改名／換色前的本機版本
       at: Date.now()
     };
     var put = p.add.concat(p.update).map(function (x) { return x.f; });
+    var fput = p.folders.concat(fUpd.map(function (x) { return x.f; }));
     Store.putMany(put)
-      .then(function () { return p.folders.length ? Store.putFolders(p.folders) : null; })
+      .then(function () { return fput.length ? Store.putFolders(fput) : null; })
       .then(reloadAll)
       .then(function () {
         lastMerge = undo;
@@ -2573,6 +2633,7 @@
         closeModal();
         toast('已套用：新增 ' + p.add.length + ' 篇、更新 ' + p.update.length +
           ' 篇' + (p.keep.length ? '、保留本機 ' + p.keep.length + ' 篇' : '') +
+          (fput.length ? '、資料夾 ' + fput.length + ' 個' : '') +
           '（可在備份/還原裡復原）');
       });
   }
@@ -2584,6 +2645,7 @@
       .then(function () {
         return Promise.all(u.folders.map(function (id) { return Store.delFolder(id); }));
       })
+      .then(function () { return u.folderPrev && u.folderPrev.length ? Store.putFolders(u.folderPrev) : null; })
       .then(reloadAll)
       .then(function () {
         lastMerge = null;

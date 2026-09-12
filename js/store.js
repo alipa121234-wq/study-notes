@@ -138,7 +138,9 @@
       name: name || '新資料夾',
       color: FOLDER_COLORS[(order || 0) % FOLDER_COLORS.length],
       order: order || 0,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      /* 合併備份時靠這個判斷哪邊的名稱／顏色比較新 */
+      updatedAt: Date.now()
     };
   }
 
