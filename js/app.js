@@ -1634,11 +1634,18 @@
   })();
 
   /* ============================================================
-     輪盤：按住空白鍵 / 滑鼠右鍵
+     輪盤：按住空白鍵 / 滑鼠右鍵（右鍵只在畫圖模式）
      ============================================================ */
-  $('#pagewrap').addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  /* 輪盤換的是筆色，只有畫筆／螢光筆／橡皮擦模式用得到。
+     選取模式（打字、選字）的右鍵要留給瀏覽器原本的選單 —— 複製、貼上、查詢。
+     原本不分模式一律開輪盤、還把右鍵選單擋掉，選好字按右鍵只看到一圈
+     跟文字無關的筆色，想複製反而沒辦法。 */
+  function rightClickRadial() { return Ink.mode !== 'select'; }
+  $('#pagewrap').addEventListener('contextmenu', function (e) {
+    if (rightClickRadial()) e.preventDefault();
+  });
   $('#pagewrap').addEventListener('pointerdown', function (e) {
-    if (e.button === 2) { e.preventDefault(); Ink.radialOpen(e.clientX, e.clientY); }
+    if (e.button === 2 && rightClickRadial()) { e.preventDefault(); Ink.radialOpen(e.clientX, e.clientY); }
   });
   document.addEventListener('pointerup', function (e) {
     if (e.button === 2 && Ink.radialIsOpen()) Ink.radialClose(true);
