@@ -183,13 +183,19 @@ body.mode-draw #pagewrap{touch-action:pan-y;}
 body.mode-pen #pagewrap,body.mode-hl #pagewrap{cursor:crosshair;}
 body.mode-eraser #pagewrap{cursor:cell;}
 
+/* 區塊的操作按鈕（上移、下移、刪除…）放在區塊「左邊的留白」直排，不蓋在內容上。
+   原本浮在區塊右上角，會蓋住第一行後半段，那裡的字選不到。
+   right:100% 讓按鈕列的右緣剛好貼齊區塊左緣 —— 中間只要有一點縫，
+   滑鼠從文字往左移過去的瞬間就離開了區塊，按鈕列還沒摸到就消失。
+   看起來的間距用透明邊框做，點得到的範圍是連續的。 */
 .block .bar{
-  position:absolute;right:4px;top:4px;z-index:3;display:none;gap:3px;
-  background:rgba(255,255,255,.94);border-radius:8px;padding:3px;box-shadow:var(--shadow);
+  position:absolute;right:100%;top:0;z-index:3;display:none;flex-direction:column;gap:1px;
+  background:rgba(255,255,255,.96);background-clip:padding-box;
+  border-right:4px solid transparent;border-radius:8px;padding:2px 1px;box-shadow:var(--shadow);
 }
 .block:hover .bar{display:flex;}
 body.mode-draw .block .bar{display:none;}
-.block .bar button{border:none;background:none;cursor:pointer;font-size:12px;padding:2px 5px;border-radius:6px;color:var(--ink-soft);}
+.block .bar button{border:none;background:none;cursor:pointer;font-size:12px;padding:3px 3px;line-height:1.2;border-radius:6px;color:var(--ink-soft);}
 .block .bar button:hover{background:var(--bg);color:var(--ink);}
 
 .content{outline:none;position:relative;z-index:1;}
