@@ -1199,6 +1199,8 @@
           if (s !== e) el.setRangeText('', s, e, 'end');
           else if (s > 0) el.setRangeText('', s - 1, s, 'end');
           else return;
+        } else if (k === 'tab') {
+          return;                    // 標題只有一行，沒有對齊的需要
         } else if (k === 'space') {
           el.setRangeText(' ', s, e, 'end');
         } else {
@@ -1210,6 +1212,7 @@
       } else {
         if (k === 'back') document.execCommand('delete');
         else if (k === 'space') document.execCommand('insertText', false, ' ');
+        else if (k === 'tab') document.execCommand('insertText', false, '\t');
         else document.execCommand('insertLineBreak');
       }
       el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1735,6 +1738,18 @@
       }
     }
 
+    /* 文字段落裡的 Tab：插入跳格字元，讓「單字　意思」這種清單對齊。
+       用空白對不齊 —— 英文字母寬窄不一，call on 和 call for 打一樣多空白，
+       後面的中文一定錯開。跳格會停在固定間隔的位置，前面長短差一點照樣對齊。
+       瀏覽器預設的 Tab 是跳到下一個欄位，在筆記裡用不到。 */
+    if (k === 'Tab' && editing && !e.ctrlKey && !e.altKey && !e.metaKey && Editor.currentRoot()) {
+      e.preventDefault();
+      if (e.isComposing) return;               // 注音組字中不要動
+      if (e.shiftKey) removeTabBeforeCaret();
+      else document.execCommand('insertText', false, '\t');
+      return;
+    }
+
     if (editing) return;
 
     /* --- 非編輯狀態的單鍵快捷 --- */
@@ -1958,6 +1973,20 @@
     el.addEventListener('click', function () { if (!viaTouch) fn(); });
     /* 滑鼠按下時不要讓選取／焦點消失（桌機） */
     el.addEventListener('mousedown', function (e) { e.preventDefault(); });
+  }
+
+  /* Shift+Tab：刪掉游標前面的一個跳格（前面不是跳格就什麼都不做） */
+  function removeTabBeforeCaret() {
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return;
+    var r = sel.getRangeAt(0), n = r.startContainer, o = r.startOffset;
+    if (n.nodeType !== 3) {
+      var prev = n.childNodes[o - 1];
+      while (prev && prev.nodeType === 1 && prev.lastChild) prev = prev.lastChild;
+      if (!prev || prev.nodeType !== 3) return;
+      n = prev; o = prev.nodeValue.length;
+    }
+    if (o > 0 && n.nodeValue.charAt(o - 1) === '\t') document.execCommand('delete');
   }
 
   /* ---------- 字級 ---------- */

@@ -200,6 +200,11 @@ body.mode-draw .block .bar{display:none;}
 
 .content{outline:none;position:relative;z-index:1;}
 .tblock .content{font-size:16px;min-height:1.6em;padding:2px;word-break:break-word;}
+/* 跳格對齊：Tab 停在固定間隔（每 4 個中文字寬），「單字　意思」這種清單才對得齊。
+   一定要 pre-wrap，否則瀏覽器會把跳格字元壓成一個空白。
+   貼上、語音、OCR 插入的換行都是 <br>，不是換行字元，所以不會讓舊筆記的排版改變。
+   先寫整數版當退路，較舊的瀏覽器不認得長度單位。 */
+.tblock .content{white-space:pre-wrap;tab-size:8;tab-size:4em;}
 /* 空白提示：不能只靠 :empty —— 瀏覽器常自動塞一個 <br> 進去，
    那就不算 empty，提示會整個消失、區塊看起來只是一片空白，
    使用者就不知道那裡可以打字。所以另外由 JS 依實際文字內容加上 .ph */
