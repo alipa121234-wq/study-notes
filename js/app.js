@@ -879,6 +879,12 @@
       }
       rows.push({ mid: it.mid, h: it.h, parts: [it] });
     });
+    /* 同一列裡要依左緣排好。排序是先比垂直中心的，而中文框比英文框高一點、
+       中心差個幾像素，同一列的欄位就會被排成「中文、第2欄、第3欄、第1欄」。
+       後面抓欄位基準線是按順序取的，順序一亂，整張表就全部擠到同一欄。 */
+    rows.forEach(function (r) {
+      r.parts.sort(function (a, b) { return a.left - b.left; });
+    });
 
     lead = lead || [];
 
@@ -901,67 +907,78 @@
       r.zoneTop = i ? rows[i - 1].zoneBot : r.top - r.h;   // 讓各列的範圍相連，不留空隙
     });
 
-    /* ---- 表格模式：先分欄，再處理合併儲存格 ----
-       表格如果有合併儲存格（例如 far 跨兩列、對應 farther / further），
-       那個字的位置在兩列中間，會被歸成自己一列，輸出就變成
-       「farther farthest」「far 遠的」「further furthest」三列散開。
-       做法：把所有文字依 x 座標分欄；相鄰兩列如果占用的欄位剛好互補
-       （一列只有第 1、4 欄，另一列只有第 2、3 欄），就併成同一列。
-       缺的欄位留空但保留跳格，下一行的欄位才會對齊。
-       只有多數列都有兩個以上欄位時才走這條路，一般段落不受影響。 */
+    /* ---- 表格模式：先找欄位基準線，再處理合併儲存格 ----
+       用「每段文字的左緣」直接分群會錯：標題常常靠左或置中，起始位置跟
+       內文不同，一錯位後面整張表都跟著偏（使用者遇到的狀況：標題在第 1 欄，
+       good、bad 卻掉到第 2 欄，右邊還多出兩個空欄）。
+       改成先看「欄位數最常見」的那幾列（例如四欄的列），取每一欄左緣的
+       中位數當基準線，再把每段文字對到最近的基準線，並保持由左到右。
+       合併儲存格（far 跨兩列）則限定「兩列都欄位不滿」才併，
+       完整的列不會被錯併進去。 */
     if (gapMode !== 'blank') {
       var hs = rows.map(function (r) { return r.h; }).sort(function (a, b) { return a - b; });
       var medH = hs[Math.floor(hs.length / 2)] || 20;
-      var lefts = [];
-      rows.forEach(function (r) { r.parts.forEach(function (pt) { lefts.push(pt.left); }); });
-      lefts.sort(function (a, b) { return a - b; });
-      var groups = [], cur = [lefts[0]];
-      for (var li = 1; li < lefts.length; li++) {
-        if (lefts[li] - cur[cur.length - 1] <= medH * 1.2) cur.push(lefts[li]);
-        else { groups.push(cur); cur = [lefts[li]]; }
-      }
-      groups.push(cur);
-      var colMin = groups.map(function (g) { return g[0]; });
-      var multi = rows.filter(function (r) { return r.parts.length >= 2; }).length;
 
-      if (colMin.length >= 2 && colMin.length <= 10 && multi >= Math.max(2, rows.length * 0.5)) {
-        var colOf = function (left) {
-          var best = 0, bestD = Infinity;
-          colMin.forEach(function (m, i) {
-            var d = Math.abs(left - m);
-            if (d < bestD) { bestD = d; best = i; }
+      /* 欄位數要取「最多的那個」，不是「最常見的那個」。
+         有合併儲存格的表格裡，被切開的那幾列只剩兩欄（farther/farthest），
+         數量反而比完整的四欄列還多；取最常見的就會把整張表壓成兩欄，
+         後面的欄位全部黏在一起（使用者遇到的偏格）。
+         但也不能無條件取最大 —— 偶爾一列被辨識成多切一刀就會多出一欄，
+         所以要求這個欄位數至少要有四分之一的列數支撐。 */
+      var counts = {};
+      rows.forEach(function (r) {
+        if (r.parts.length >= 2) counts[r.parts.length] = (counts[r.parts.length] || 0) + 1;
+      });
+      var need = Math.max(2, Math.ceil(rows.length * 0.25));
+      var M = 0;
+      Object.keys(counts).forEach(function (k) {
+        if (+k > M && +k <= 12 && counts[k] >= need) M = +k;
+      });
+
+      if (M >= 2) {
+        var full = rows.filter(function (r) { return r.parts.length === M; });
+        var anchors = [];
+        for (var ci = 0; ci < M; ci++) {
+          var xs = full.map(function (r) { return r.parts[ci].left; }).sort(function (a, b) { return a - b; });
+          anchors.push(xs[Math.floor(xs.length / 2)]);
+        }
+        var assign = function (parts) {
+          var cells = [], next = 0;
+          parts.slice().sort(function (a, b) { return a.left - b.left; }).forEach(function (pt) {
+            var bi = next, bd = Infinity;
+            for (var i = next; i < M; i++) {
+              var d = Math.abs(pt.left - anchors[i]);
+              if (d < bd) { bd = d; bi = i; }
+            }
+            cells[bi] = cells[bi] ? cells[bi] + ' ' + pt.t : pt.t;
+            next = Math.min(bi + 1, M - 1);
           });
-          return best;
+          return cells;
         };
         var grid = rows.map(function (r) {
-          var cells = [];
-          r.parts.slice().sort(function (a, b) { return a.left - b.left; }).forEach(function (pt) {
-            var ci = colOf(pt.left);
-            cells[ci] = cells[ci] ? cells[ci] + ' ' + pt.t : pt.t;
-          });
-          return { cells: cells, top: r.top, bot: r.bot };
+          return { cells: assign(r.parts), top: r.top, bot: r.bot };
         });
+        var countCells = function (cells) {
+          var n = 0;
+          for (var i = 0; i < M; i++) if (cells[i] != null) n++;
+          return n;
+        };
         for (var gi = 0; gi < grid.length - 1; gi++) {
           var A = grid[gi], B = grid[gi + 1];
-          var overlap = false, an = 0, bn = 0;
-          for (var ci = 0; ci < colMin.length; ci++) {
-            if (A.cells[ci] != null) an++;
-            if (B.cells[ci] != null) bn++;
-            if (A.cells[ci] != null && B.cells[ci] != null) overlap = true;
-          }
-          if (!overlap && an && bn && an < colMin.length && bn < colMin.length &&
-            (B.top - A.bot) < medH * 1.2) {
-            for (var cj = 0; cj < colMin.length; cj++) {
-              if (B.cells[cj] != null) A.cells[cj] = B.cells[cj];
-            }
+          var an = countCells(A.cells), bn = countCells(B.cells);
+          var overlap = false;
+          for (var cj = 0; cj < M; cj++) if (A.cells[cj] != null && B.cells[cj] != null) overlap = true;
+          /* 兩列都「欄位不滿」、位置相鄰、占用的欄位又剛好互補 -> 合併儲存格 */
+          if (!overlap && an && bn && an < M && bn < M && (B.top - A.bot) < medH * 1.2) {
+            for (var ck = 0; ck < M; ck++) if (B.cells[ck] != null) A.cells[ck] = B.cells[ck];
             A.bot = B.bot;
             grid.splice(gi + 1, 1);
-            gi--;                       // 併完可能還能再併下一列
+            gi--;
           }
         }
         return grid.map(function (g) {
           var cells = [];
-          for (var k = 0; k < colMin.length; k++) cells.push(g.cells[k] == null ? '' : g.cells[k]);
+          for (var k = 0; k < M; k++) cells.push(g.cells[k] == null ? '' : g.cells[k]);
           while (cells.length && cells[cells.length - 1] === '') cells.pop();
           return cells.join('\t');
         }).join('\n');
