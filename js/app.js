@@ -606,9 +606,13 @@
       var i = note.blocks.indexOf(b);
       if (a === 'ocr') {
         popup(e.target, [
-          { head: '把圖片上的文字辨識出來' },
-          { label: '中文為主（含英文）', fn: function () { ocrBlock(b, el, 'zh-Hant-TW'); } },
-          { label: '只有英文', fn: function () { ocrBlock(b, el, 'en-US'); } }
+          { head: '表格／單字表（欄位用跳格對齊）' },
+          { label: '中文為主（含英文）', fn: function () { ocrBlock(b, el, 'zh-Hant-TW', 'tab'); } },
+          { label: '只有英文', fn: function () { ocrBlock(b, el, 'en-US', 'tab'); } },
+          '-',
+          { head: '填空題講義（空格補底線）' },
+          { label: '中文為主（含英文）', fn: function () { ocrBlock(b, el, 'zh-Hant-TW', 'blank'); } },
+          { label: '只有英文', fn: function () { ocrBlock(b, el, 'en-US', 'blank'); } }
         ]);
         return;
       }
@@ -663,7 +667,8 @@
   var CJK = '\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF\\u3000-\\u303F\\uFF00-\\uFFEF';
   /* Windows OCR 把每個中文字當成一個「詞」，字跟字中間會多空白，要接回去。
      用 lookahead 不吃掉右邊那個字，連續好幾個字一次掃描就能全部接起來。 */
-  var CJK_GAP = new RegExp('([' + CJK + '])[ \\t]+(?=[' + CJK + '])', 'g');
+  /* 只清空白，不能清跳格：跳格現在是表格欄位的分隔 */
+  var CJK_GAP = new RegExp('([' + CJK + '])[ ]+(?=[' + CJK + '])', 'g');
 
   function tidyOcr(t) {
     return String(t || '')
@@ -674,7 +679,9 @@
       /* 填空底線後面接標點時不留空白。這裡只能比對「同一行」的空白，
          用 \s 會把換行一起吃掉，行尾的填空就會跟下一行黏在一起 */
       .replace(/______[ \t]+(?=[,.;:!?，。、；：！？])/g, '______')
-      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/ {2,}/g, ' ')
+      /* 欄位之間只留一個跳格 */
+      .replace(/ *\t[ \t]*/g, '\t')
       .replace(/[ \t]+$/gm, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
@@ -764,7 +771,13 @@
    * 一行可能被填空的底線切成好幾段，而且回傳順序不照畫面位置，
    * 所以要自己分列、由左到右排、再把底線還原成 ______。
    */
-  function assembleOcr(lines, lead) {
+  /**
+   * @param gapMode 'tab'（預設）兩段文字之間空太多 -> 插入跳格，欄位會對齊；
+   *                'blank' 補上 ______，給填空題講義用。
+   *   表格的欄位之間本來就空很開，一律當成填空的話，每個欄位中間都會冒出
+   *   ______（使用者遇到的狀況）。真正偵測到底線的地方不受這個選項影響。
+   */
+  function assembleOcr(lines, lead, gapMode) {
     var items = (lines || []).filter(function (l) {
       return l && String(l.t || '').trim() && l.h > 0;
     }).map(function (l) {
@@ -840,19 +853,21 @@
           if (out[out.length - 1] !== OCR_BLANK) out.push(OCR_BLANK);
           return;
         }
-        /* 沒偵測到底線時的備援：兩段文字之間空太多，也當成填空 */
+        /* 兩段文字之間空太多：表格是欄位分隔（跳格對齊），
+           填空題講義則是沒被偵測到的空格（補底線） */
         if (prev && out[out.length - 1] !== OCR_BLANK &&
           (s.left - prev.right) > row.h * 1.2) {
-          out.push(OCR_BLANK);
+          out.push(gapMode === 'blank' ? OCR_BLANK : '\t');
         }
         out.push(s.t);
         prev = s;
       });
-      return out.join(' ');
+      /* 跳格前後不要再補空白，不然對齊會差一格 */
+      return out.join(' ').replace(/ *\t */g, '\t');
     }).join('\n');
   }
 
-  function ocrBlock(b, el, lang) {
+  function ocrBlock(b, el, lang, gapMode) {
     var img = $('img', el);
     if (!img || !img.complete || !img.naturalWidth) { toast('圖片還沒載入完，稍等一下再試'); return; }
     toast('辨識中…');
@@ -894,10 +909,11 @@
           .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
         var textH = hs.length ? hs[Math.floor(hs.length / 2)] / f : 0;
         var lead = findUnderlines(src, f, textH);
-        var text = tidyOcr(assembleOcr(j.lines, lead));
+        var text = tidyOcr(assembleOcr(j.lines, lead, gapMode));
         if (!text) { toast('這張圖沒有辨識到文字'); return; }
         addTextAfter(b, text);
-        toast('已轉成 ' + text.split('\n').length + ' 行文字 —— 請先校對錯字再標記');
+        toast('已轉成 ' + text.split('\n').length + ' 行文字' +
+          (gapMode === 'blank' ? '' : '，欄位用跳格對齊') + ' —— 請先校對錯字再標記');
       }).catch(function (e) {
         toast('辨識失敗：' + e.message);
       });
