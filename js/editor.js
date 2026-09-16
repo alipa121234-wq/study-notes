@@ -308,6 +308,49 @@
   };
 
   /* ---------- 在游標處插入文字（語音用） ---------- */
+  /* 貼上含表格的內容時用的過濾器。
+     一律只取純文字的話，把表格從 A 區塊複製到 B 區塊，欄位結構就沒了
+     （使用者遇到的狀況）。但也不能原封不動貼進來 —— 從網頁複製會夾帶
+     一堆樣式、甚至 script。所以只留下表格骨架和自己的標記，
+     其餘標籤拆掉只留文字，屬性除了 colspan/rowspan 全部丟掉。
+     @return 過濾後的 HTML；內容裡沒有表格時回傳空字串（交給純文字的路徑） */
+  var KEEP_TAGS = /^(TABLE|THEAD|TBODY|TFOOT|TR|TD|TH|BR|SPAN|B|I|U|EM|STRONG|MARK)$/;
+  var KEEP_CLASS = /^(hl|fc|fs)(-\d)?$|^ocr-table$/;
+  Editor.sanitizePaste = function (html) {
+    var box = document.createElement('div');
+    box.innerHTML = String(html || '');
+    if (!box.querySelector('table')) return '';
+    (function walk(node) {
+      Array.prototype.slice.call(node.childNodes).forEach(function (n) {
+        if (n.nodeType === 8) { n.parentNode.removeChild(n); return; }      // 註解
+        if (n.nodeType !== 1) return;
+        if (n.tagName === 'SCRIPT' || n.tagName === 'STYLE') { n.parentNode.removeChild(n); return; }
+        if (!KEEP_TAGS.test(n.tagName)) {                                   // 不保留的標籤：只留內容
+          walk(n);
+          var p = n.parentNode;
+          while (n.firstChild) p.insertBefore(n.firstChild, n);
+          p.removeChild(n);
+          return;
+        }
+        Array.prototype.slice.call(n.attributes).forEach(function (a) {
+          if (a.name === 'colspan' || a.name === 'rowspan') return;
+          if (a.name === 'class') {
+            var keep = a.value.split(/\s+/).filter(function (c) { return KEEP_CLASS.test(c); });
+            if (keep.length) n.setAttribute('class', keep.join(' '));
+            else n.removeAttribute('class');
+            return;
+          }
+          n.removeAttribute(a.name);
+        });
+        walk(n);
+      });
+    })(box);
+    Array.prototype.slice.call(box.querySelectorAll('table')).forEach(function (t) {
+      if (!/\bocr-table\b/.test(t.className)) t.className = 'ocr-table';
+    });
+    return box.innerHTML;
+  };
+
   Editor.insertTextAt = function (root, text) {
     if (!root || !text) return;
     /* Windows 複製出來的文字，換行是 \r\n 兩個字元。只切 \n 的話每行結尾會

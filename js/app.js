@@ -1310,6 +1310,16 @@
     // 純文字貼上（避免帶進外部樣式）
     var root = Editor.currentRoot();
     if (root && e.clipboardData) {
+      /* 先看是不是表格：是的話保留欄位結構（過濾掉樣式與 script），
+         不是就照舊只取純文字，避免從網頁夾帶一堆格式進來 */
+      var clean = Editor.sanitizePaste(e.clipboardData.getData('text/html'));
+      if (clean) {
+        e.preventDefault();
+        Editor.History.checkpoint(root);
+        document.execCommand('insertHTML', false, clean);
+        root.dispatchEvent(new Event('input'));
+        return;
+      }
       var txt = e.clipboardData.getData('text/plain');
       if (txt) {
         e.preventDefault();
