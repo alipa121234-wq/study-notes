@@ -901,6 +901,73 @@
       r.zoneTop = i ? rows[i - 1].zoneBot : r.top - r.h;   // 讓各列的範圍相連，不留空隙
     });
 
+    /* ---- 表格模式：先分欄，再處理合併儲存格 ----
+       表格如果有合併儲存格（例如 far 跨兩列、對應 farther / further），
+       那個字的位置在兩列中間，會被歸成自己一列，輸出就變成
+       「farther farthest」「far 遠的」「further furthest」三列散開。
+       做法：把所有文字依 x 座標分欄；相鄰兩列如果占用的欄位剛好互補
+       （一列只有第 1、4 欄，另一列只有第 2、3 欄），就併成同一列。
+       缺的欄位留空但保留跳格，下一行的欄位才會對齊。
+       只有多數列都有兩個以上欄位時才走這條路，一般段落不受影響。 */
+    if (gapMode !== 'blank') {
+      var hs = rows.map(function (r) { return r.h; }).sort(function (a, b) { return a - b; });
+      var medH = hs[Math.floor(hs.length / 2)] || 20;
+      var lefts = [];
+      rows.forEach(function (r) { r.parts.forEach(function (pt) { lefts.push(pt.left); }); });
+      lefts.sort(function (a, b) { return a - b; });
+      var groups = [], cur = [lefts[0]];
+      for (var li = 1; li < lefts.length; li++) {
+        if (lefts[li] - cur[cur.length - 1] <= medH * 1.2) cur.push(lefts[li]);
+        else { groups.push(cur); cur = [lefts[li]]; }
+      }
+      groups.push(cur);
+      var colMin = groups.map(function (g) { return g[0]; });
+      var multi = rows.filter(function (r) { return r.parts.length >= 2; }).length;
+
+      if (colMin.length >= 2 && colMin.length <= 10 && multi >= Math.max(2, rows.length * 0.5)) {
+        var colOf = function (left) {
+          var best = 0, bestD = Infinity;
+          colMin.forEach(function (m, i) {
+            var d = Math.abs(left - m);
+            if (d < bestD) { bestD = d; best = i; }
+          });
+          return best;
+        };
+        var grid = rows.map(function (r) {
+          var cells = [];
+          r.parts.slice().sort(function (a, b) { return a.left - b.left; }).forEach(function (pt) {
+            var ci = colOf(pt.left);
+            cells[ci] = cells[ci] ? cells[ci] + ' ' + pt.t : pt.t;
+          });
+          return { cells: cells, top: r.top, bot: r.bot };
+        });
+        for (var gi = 0; gi < grid.length - 1; gi++) {
+          var A = grid[gi], B = grid[gi + 1];
+          var overlap = false, an = 0, bn = 0;
+          for (var ci = 0; ci < colMin.length; ci++) {
+            if (A.cells[ci] != null) an++;
+            if (B.cells[ci] != null) bn++;
+            if (A.cells[ci] != null && B.cells[ci] != null) overlap = true;
+          }
+          if (!overlap && an && bn && an < colMin.length && bn < colMin.length &&
+            (B.top - A.bot) < medH * 1.2) {
+            for (var cj = 0; cj < colMin.length; cj++) {
+              if (B.cells[cj] != null) A.cells[cj] = B.cells[cj];
+            }
+            A.bot = B.bot;
+            grid.splice(gi + 1, 1);
+            gi--;                       // 併完可能還能再併下一列
+          }
+        }
+        return grid.map(function (g) {
+          var cells = [];
+          for (var k = 0; k < colMin.length; k++) cells.push(g.cells[k] == null ? '' : g.cells[k]);
+          while (cells.length && cells[cells.length - 1] === '') cells.pop();
+          return cells.join('\t');
+        }).join('\n');
+      }
+    }
+
     return rows.map(function (row) {
       row.parts.sort(function (a, b) { return a.left - b.left; });
 
