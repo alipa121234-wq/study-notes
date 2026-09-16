@@ -566,13 +566,15 @@
       content.spellcheck = false;
       content.setAttribute('data-ph', '在這裡打字、用觸控筆寫字、或按 🎙️ 用說的…');
       content.innerHTML = b.html || '';
-      /* 圖片轉出來的表格，跳格間隔依內容而定；一般段落用 CSS 的預設 */
+      /* 有跳格的段落，間隔依內容而定；一般段落用 CSS 的預設 */
       if (b.tab) content.style.tabSize = b.tab + 'ch';
+      syncTabWidth(content, b);
       Editor.History.track(content, b.id);
       var ph = function () { content.classList.toggle('ph', !content.textContent.trim()); };
       ph();
       content.addEventListener('input', function () {
         b.html = content.innerHTML;
+        syncTabWidth(content, b);
         ph();
         markDirty();
       });
@@ -966,6 +968,23 @@
     });
     if (!max) return 0;                       // 沒有跳格就不用設
     return Math.max(6, Math.min(36, max + 3));
+  }
+
+  /* 跳格間隔是「每一塊自己」的設定，依內容重算：
+     只有轉出來的那一塊有設定的話，把文字複製到別的文字區就會退回預設寬度、
+     欄位跟著跑掉（使用者遇到的狀況）。改成內容一變就重算。 */
+  function syncTabWidth(content, b) {
+    var T = String.fromCharCode(9);
+    var txt = content.textContent || '';
+    if (txt.indexOf(T) < 0) {
+      if (b.tab) { delete b.tab; content.style.tabSize = ''; }
+      return;
+    }
+    var w = tabWidthFor(txt);
+    if (w && w !== b.tab) {
+      b.tab = w;
+      content.style.tabSize = w + 'ch';
+    }
   }
 
   function ocrBlock(b, el, lang, gapMode) {
