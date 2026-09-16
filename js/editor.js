@@ -352,6 +352,14 @@
     Array.prototype.slice.call(d.querySelectorAll('br')).forEach(function (br) {
       br.parentNode.replaceChild(document.createTextNode('\n'), br);
     });
+    /* 表格：每一格之間補跳格、每一列補換行。
+       不補的話 good 和 better 會黏成 goodbetter，出考題就切不出正確的句子。 */
+    Array.prototype.slice.call(d.querySelectorAll('tr')).forEach(function (tr) {
+      tr.appendChild(document.createTextNode('\n'));
+    });
+    Array.prototype.slice.call(d.querySelectorAll('td,th')).forEach(function (td) {
+      if (td.previousElementSibling) td.parentNode.insertBefore(document.createTextNode('\t'), td);
+    });
     Array.prototype.slice.call(d.querySelectorAll('div,p,li')).forEach(function (el) {
       el.parentNode.insertBefore(document.createTextNode('\n'), el);
       el.appendChild(document.createTextNode('\n'));

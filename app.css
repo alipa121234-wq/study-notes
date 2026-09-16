@@ -478,3 +478,13 @@ body{
 .content .fs-2{font-size:1.25em;}
 .content .fs-3{font-size:1.5em;}
 .content .fs-4{font-size:1.9em;}
+
+/* 圖片轉出來的表格：每一欄自動取最寬的內容當寬度，永遠對齊 */
+.tblock .content table.ocr-table{
+  border-collapse:collapse;margin:2px 0;max-width:100%;
+}
+.tblock .content table.ocr-table td{
+  border:1px solid var(--line);padding:3px 10px;vertical-align:top;
+  word-break:break-word;
+}
+.tblock .content table.ocr-table td:empty:after{content:'';}

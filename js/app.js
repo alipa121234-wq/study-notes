@@ -1167,9 +1167,33 @@
     });
   }
 
+  /* 把辨識結果排成真的表格。
+     用跳格對齊有先天限制：某一格的字比一格寬時，後面的欄位會被推到下一格
+     （farther（更遠的）後面的中文就會偏掉）；把間隔加寬到容得下最長的字，
+     整列又會超過寬度、被擠到下一行。表格沒有這個問題：每一欄自動取最寬的
+     內容當寬度，永遠對齊，視窗變窄也會自己調整。 */
+  function ocrToHtml(text) {
+    var T = String.fromCharCode(9);
+    var lines = String(text || '').split('\n');
+    var tabbed = lines.filter(function (l) { return l.indexOf(T) >= 0; }).length;
+    if (tabbed < 2) return esc(text).replace(/\n/g, '<br>');   // 不是表格就照舊
+    var cols = 0;
+    lines.forEach(function (l) { cols = Math.max(cols, l.split(T).length); });
+    var body = lines.map(function (l) {
+      if (!l.trim()) return '';
+      var cells = l.split(T);
+      /* 沒有跳格的行（例如表格前的說明）橫跨整列 */
+      if (cells.length === 1) return '<tr><td colspan="' + cols + '">' + esc(l) + '</td></tr>';
+      var tds = '';
+      for (var i = 0; i < cols; i++) tds += '<td>' + esc(cells[i] == null ? '' : cells[i]) + '</td>';
+      return '<tr>' + tds + '</tr>';
+    }).join('');
+    return '<table class="ocr-table">' + body + '</table>';
+  }
+
   function addTextAfter(b, text, tab) {
     var i = note.blocks.indexOf(b);
-    var nb = M.newBlock('text', { html: esc(text).replace(/\n/g, '<br>') });
+    var nb = M.newBlock('text', { html: ocrToHtml(text) });
     if (tab) nb.tab = tab;                    // 這一塊自己的跳格間隔（單位：字元寬）
     note.blocks.splice(i + 1, 0, nb);
     pushBlockHist({ kind: 'add', block: nb, index: i + 1 });
