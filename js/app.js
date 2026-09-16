@@ -951,36 +951,56 @@
     }).join('\n');
   }
 
-  /* 轉出來的表格要對齊，跳格間隔得比「最長的那一欄」再寬一點。
-     固定 4 個中文字寬時，strong/stronger 這種較長的欄位會超過一格、
-     跳到下一格，就跟其他列錯開了。中文字算兩倍寬。 */
-  function tabWidthFor(text) {
-    var T = String.fromCharCode(9), max = 0;
+  /* 跳格間隔：取「多數欄位」的寬度，不是最長的那一個。
+     用最長的會被異常值毀掉 —— 辨識錯字、或某一列夾了一大段說明，
+     間隔就被撐得很寬，四個欄位加起來超過一行，中文被擠到下一行。
+     另外還要確定所有欄位塞得進這一塊的寬度。中文字算兩倍寬。 */
+  function cellWidth(cell) {
+    var w = 0;
+    for (var i = 0; i < cell.length; i++) {
+      w += /[\u3400-\u9fff\uf900-\uffef]/.test(cell.charAt(i)) ? 2 : 1;
+    }
+    return w;
+  }
+  function tabWidthFor(text, roomCols) {
+    var T = String.fromCharCode(9), widths = [], cols = 0;
     String(text || '').split('\n').forEach(function (line) {
       if (line.indexOf(T) < 0) return;
-      line.split(T).forEach(function (cell) {
-        var w = 0;
-        for (var i = 0; i < cell.length; i++) {
-          w += /[\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(cell.charAt(i)) ? 2 : 1;
-        }
-        if (w > max) max = w;
-      });
+      var cells = line.split(T);
+      cols = Math.max(cols, cells.length);
+      /* 每一列最後一欄後面沒有跳格，不影響間隔 */
+      cells.slice(0, -1).forEach(function (c) { widths.push(cellWidth(c)); });
     });
-    if (!max) return 0;                       // 沒有跳格就不用設
-    return Math.max(6, Math.min(36, max + 3));
+    if (!widths.length) return 0;
+    widths.sort(function (a, b) { return a - b; });
+    var p80 = widths[Math.min(widths.length - 1, Math.floor(widths.length * 0.8))];
+    var w = p80 + 2;
+    if (roomCols && cols > 1) w = Math.min(w, Math.floor(roomCols / cols));
+    return Math.max(5, Math.min(24, w));
   }
 
   /* 跳格間隔是「每一塊自己」的設定，依內容重算：
      只有轉出來的那一塊有設定的話，把文字複製到別的文字區就會退回預設寬度、
-     欄位跟著跑掉（使用者遇到的狀況）。改成內容一變就重算。 */
+     欄位跟著跑掉。改成內容一變就重算。 */
   function syncTabWidth(content, b) {
     var T = String.fromCharCode(9);
-    var txt = content.textContent || '';
+    /* 一定要用 innerText：textContent 會忽略 <br>，整個表格會被當成「一行、
+       幾十個欄位」，間隔就被壓到極小，欄位反而更亂。 */
+    var txt = content.innerText || '';
     if (txt.indexOf(T) < 0) {
       if (b.tab) { delete b.tab; content.style.tabSize = ''; }
       return;
     }
-    var w = tabWidthFor(txt);
+    /* 這一塊實際容得下幾個字元，欄位才不會被擠到下一行 */
+    var probe = document.createElement('span');
+    probe.textContent = '00000000000000000000';
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:inherit';
+    content.appendChild(probe);
+    var chPx = probe.getBoundingClientRect().width / 20;
+    probe.remove();
+    var roomCols = chPx > 0 ? Math.floor(content.clientWidth / chPx) : 0;
+
+    var w = tabWidthFor(txt, roomCols);
     if (w && w !== b.tab) {
       b.tab = w;
       content.style.tabSize = w + 'ch';
@@ -1031,7 +1051,7 @@
         var lead = findUnderlines(src, f, textH);
         var text = tidyOcr(assembleOcr(j.lines, lead, gapMode));
         if (!text) { toast('這張圖沒有辨識到文字'); return; }
-        addTextAfter(b, text, tabWidthFor(text));
+        addTextAfter(b, text);   // 間隔由 syncTabWidth 依內容與寬度決定
         toast('已轉成 ' + text.split('\n').length + ' 行文字' +
           (gapMode === 'blank' ? '' : '，欄位用跳格對齊') + ' —— 請先校對錯字再標記');
       }).catch(function (e) {
