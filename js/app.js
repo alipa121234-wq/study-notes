@@ -925,9 +925,29 @@
          後面的欄位全部黏在一起（使用者遇到的偏格）。
          但也不能無條件取最大 —— 偶爾一列被辨識成多切一刀就會多出一欄，
          所以要求這個欄位數至少要有四分之一的列數支撐。 */
+      /* 先把「同一格被切成兩段」接回去。
+         OCR 有時候會把 latter（較後的）拆成 latter 和（較後的）兩段，
+         直接拿去分欄的話，那一格就佔掉兩個欄位，整列往右擠一格
+         （使用者遇到的狀況）。兩段之間空得比一個字還窄就是同一格，
+         欄位之間的間隔都比這個寬得多。 */
+      rows.forEach(function (r) {
+        var segs = [], cur = null;
+        r.parts.forEach(function (p) {
+          if (cur && (p.left - cur.right) < r.h * 1.2) {
+            /* 幾乎貼在一起的（latter 和它後面的括號）接起來不留空白 */
+            cur.t += ((p.left - cur.right) > r.h * 0.25 ? ' ' : '') + p.t;
+            cur.right = Math.max(cur.right, p.right);
+            return;
+          }
+          cur = { t: p.t, left: p.left, right: p.right };
+          segs.push(cur);
+        });
+        r.segs = segs;
+      });
+
       var counts = {};
       rows.forEach(function (r) {
-        if (r.parts.length >= 2) counts[r.parts.length] = (counts[r.parts.length] || 0) + 1;
+        if (r.segs.length >= 2) counts[r.segs.length] = (counts[r.segs.length] || 0) + 1;
       });
       var need = Math.max(2, Math.ceil(rows.length * 0.25));
       var M = 0;
@@ -936,15 +956,15 @@
       });
 
       if (M >= 2) {
-        var full = rows.filter(function (r) { return r.parts.length === M; });
+        var full = rows.filter(function (r) { return r.segs.length === M; });
         var anchors = [];
         for (var ci = 0; ci < M; ci++) {
-          var xs = full.map(function (r) { return r.parts[ci].left; }).sort(function (a, b) { return a - b; });
+          var xs = full.map(function (r) { return r.segs[ci].left; }).sort(function (a, b) { return a - b; });
           anchors.push(xs[Math.floor(xs.length / 2)]);
         }
-        var assign = function (parts) {
+        var assign = function (segs) {
           var cells = [], next = 0;
-          parts.slice().sort(function (a, b) { return a.left - b.left; }).forEach(function (pt) {
+          segs.forEach(function (pt) {
             var bi = next, bd = Infinity;
             for (var i = next; i < M; i++) {
               var d = Math.abs(pt.left - anchors[i]);
@@ -956,7 +976,7 @@
           return cells;
         };
         var grid = rows.map(function (r) {
-          return { cells: assign(r.parts), top: r.top, bot: r.bot };
+          return { cells: assign(r.segs), top: r.top, bot: r.bot };
         });
         var countCells = function (cells) {
           var n = 0;
