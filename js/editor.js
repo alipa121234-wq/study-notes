@@ -310,9 +310,12 @@
   /* ---------- 在游標處插入文字（語音用） ---------- */
   Editor.insertTextAt = function (root, text) {
     if (!root || !text) return;
-    /* 用三連點或全選複製時，選取範圍會多含一個結尾換行，
-       照著貼會在最後多一個空行。結尾的換行一律去掉。 */
-    text = String(text).replace(/\n+$/, '');
+    /* Windows 複製出來的文字，換行是 \r\n 兩個字元。只切 \n 的話每行結尾會
+       留下一個 \r —— 文字區設成保留原始空白之後，\r 也算換行，於是每行都多
+       空一行（以前 \r 只被當成空白，看不出來）。先正規化再處理。
+       另外，用三連點或全選複製時選取範圍會多含一個結尾換行，照著貼會在
+       最後多一個空行，所以結尾的換行一律去掉。 */
+    text = String(text).replace(/\r\n?/g, '\n').replace(/\n+$/, '');
     if (!text) return;
     root.focus();
     var sel = global.getSelection();

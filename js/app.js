@@ -514,7 +514,22 @@
   /* ============================================================
      區塊繪製
      ============================================================ */
+  /* 舊筆記裡可能已經夾著 \r（貼上 Windows 文字造成的），會多出空行。
+     開啟時順手清掉，使用者不必自己一行一行刪。 */
+  function healBlocks() {
+    var fixed = 0;
+    (note.blocks || []).forEach(function (b) {
+      if (b.type === 'text' && b.html && b.html.indexOf('\r') >= 0) {
+        b.html = b.html.replace(/\r/g, '');
+        fixed++;
+      }
+    });
+    if (fixed) markDirty();
+    return fixed;
+  }
+
   function renderBlocks() {
+    healBlocks();
     var host = $('#blocks');
     host.innerHTML = '';
     canvasMap = new Map();
