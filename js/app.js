@@ -46,22 +46,72 @@
   function syncUndo() {
     var u = $('#btnUndo'), r = $('#btnRedo');
     if (!u) return;
-    u.disabled = !Ink.canUndo() && !Editor.History.pick('undo');
-    r.disabled = !Ink.canRedo() && !Editor.History.pick('redo');
+    u.disabled = !Ink.canUndo() && !Editor.History.pick('undo') && blocksTopAt() < 0;
+    r.disabled = !Ink.canRedo() && !Editor.History.pick('redo') && blocksRedoTopAt() < 0;
     u.style.opacity = u.disabled ? '.3' : '';
     r.style.opacity = r.disabled ? '.3' : '';
   }
-  /* 工具列的 ↶ ↷（還有不在打字時的 Ctrl+Z）：筆跡和文字（打字、標記）按時間排，
-     復原「最後做的那件事」。iPad 沒有 Ctrl+Z，標錯顏色只能靠這顆按鈕。 */
+  /* 區塊本身的新增／刪除／搬移也要能復原。
+     原本只有筆跡和文字內容有紀錄，刪掉一整個圖片區或文字區之後按 ↶，
+     它只會去復原文字，刪掉的區塊救不回來 —— 使用者反映這很不合理。
+     刪除時整塊深拷貝起來（連筆跡、圖片一起），復原就是把它插回原本的位置。 */
+  var blockHist = [], blockRedo = [];
+  function pushBlockHist(entry) {
+    entry.at = Date.now();
+    blockHist.push(entry);
+    if (blockHist.length > 100) blockHist.shift();
+    blockRedo.length = 0;
+    syncUndo();
+  }
+  function blocksTopAt() { var h = blockHist[blockHist.length - 1]; return h ? h.at : -1; }
+  function blocksRedoTopAt() { var h = blockRedo[blockRedo.length - 1]; return h ? h.at : -1; }
+  function blockIndex(id) {
+    return (note.blocks || []).findIndex(function (x) { return x.id === id; });
+  }
+  function invertBlock(h, redo) {
+    var arr = note.blocks;
+    if (h.kind === 'move') {
+      var to = redo ? h.to : h.from;
+      var i = blockIndex(h.id);
+      if (i >= 0) { var moved = arr.splice(i, 1)[0]; arr.splice(Math.max(0, Math.min(arr.length, to)), 0, moved); }
+    } else {
+      /* 新增的復原 = 移除；刪除的復原 = 插回去。重做則相反 */
+      var add = (h.kind === 'del') !== !!redo;
+      if (add) {
+        if (blockIndex(h.block.id) < 0) arr.splice(Math.max(0, Math.min(arr.length, h.index)), 0, h.block);
+      } else {
+        var j = blockIndex(h.block.id);
+        if (j >= 0) arr.splice(j, 1);
+      }
+    }
+    renderBlocks();
+    markDirty();
+    syncUndo();
+  }
+  function undoBlock() { var h = blockHist.pop(); if (!h) return false; invertBlock(h, false); blockRedo.push(h); return true; }
+  function redoBlock() { var h = blockRedo.pop(); if (!h) return false; invertBlock(h, true); blockHist.push(h); return true; }
+
+  /* 工具列的 ↶ ↷（還有不在打字時的 Ctrl+Z）：筆跡、文字、區塊三種紀錄按時間排，
+     復原「最後做的那件事」。iPad 沒有 Ctrl+Z，標錯顏色、刪錯區塊只能靠這顆按鈕。 */
   function doUndo() {
-    var t = Editor.History.pick('undo'), inkAt = Ink.topAt();
-    if (t && t.at >= inkAt) Editor.History.undo(t.root);
+    var t = Editor.History.pick('undo');
+    var c = [{ k: 'text', at: t ? t.at : -1 }, { k: 'ink', at: Ink.topAt() }, { k: 'block', at: blocksTopAt() }]
+      .filter(function (x) { return x.at >= 0; })
+      .sort(function (a, b) { return b.at - a.at; })[0];       // 最晚做的先復原
+    if (!c) return;
+    if (c.k === 'block') undoBlock();
+    else if (c.k === 'text') Editor.History.undo(t.root);
     else Ink.undo(findBlock, rerenderCanvas);
     syncUndo();
   }
   function doRedo() {
-    var t = Editor.History.pick('redo'), inkAt = Ink.redoTopAt();
-    if (t && (inkAt < 0 || t.at <= inkAt)) Editor.History.redo(t.root);
+    var t = Editor.History.pick('redo');
+    var c = [{ k: 'text', at: t ? t.at : -1 }, { k: 'ink', at: Ink.redoTopAt() }, { k: 'block', at: blocksRedoTopAt() }]
+      .filter(function (x) { return x.at >= 0; })
+      .sort(function (a, b) { return a.at - b.at; })[0];       // 最早被復原的先重做
+    if (!c) return;
+    if (c.k === 'block') redoBlock();
+    else if (c.k === 'text') Editor.History.redo(t.root);
     else Ink.redo(findBlock, rerenderCanvas);
     syncUndo();
   }
@@ -429,6 +479,7 @@
      筆記載入 / 建立
      ============================================================ */
   function openNote(id) {
+    blockHist = []; blockRedo = [];     // 區塊紀錄屬於單一篇筆記
     if (saveTimer) { clearTimeout(saveTimer); save(); }
     Store.get(id).then(function (n) {
       if (!n) return;
@@ -500,6 +551,8 @@
       content.spellcheck = false;
       content.setAttribute('data-ph', '在這裡打字、用觸控筆寫字、或按 🎙️ 用說的…');
       content.innerHTML = b.html || '';
+      /* 圖片轉出來的表格，跳格間隔依內容而定；一般段落用 CSS 的預設 */
+      if (b.tab) content.style.tabSize = b.tab + 'ch';
       Editor.History.track(content, b.id);
       var ph = function () { content.classList.toggle('ph', !content.textContent.trim()); };
       ph();
@@ -630,8 +683,16 @@
         ]);
         return;
       }
-      if (a === 'up' && i > 0) { note.blocks.splice(i, 1); note.blocks.splice(i - 1, 0, b); renderBlocks(); }
-      if (a === 'down' && i < note.blocks.length - 1) { note.blocks.splice(i, 1); note.blocks.splice(i + 1, 0, b); renderBlocks(); }
+      if (a === 'up' && i > 0) {
+        note.blocks.splice(i, 1); note.blocks.splice(i - 1, 0, b);
+        pushBlockHist({ kind: 'move', id: b.id, from: i, to: i - 1 });
+        renderBlocks();
+      }
+      if (a === 'down' && i < note.blocks.length - 1) {
+        note.blocks.splice(i, 1); note.blocks.splice(i + 1, 0, b);
+        pushBlockHist({ kind: 'move', id: b.id, from: i, to: i + 1 });
+        renderBlocks();
+      }
       if (a === 'clearink') {
         if (!b.strokes.length) { toast('這一塊還沒有筆跡'); return; }
         var n = b.strokes.length;
@@ -645,6 +706,9 @@
       if (a === 'del') {
         confirmModal('刪除這個區塊？').then(function (ok) {
           if (!ok) return;
+          /* 先整塊深拷貝起來（連筆跡、圖片），按 ↶ 才救得回來 */
+          var gone = note.blocks.indexOf(b);
+          if (gone >= 0) pushBlockHist({ kind: 'del', block: JSON.parse(JSON.stringify(b)), index: gone });
           note.blocks.splice(i, 1);
           if (!note.blocks.length) note.blocks.push(M.newBlock('text'));
           renderBlocks();
@@ -841,9 +905,12 @@
 
       /* 文字片段和底線混在一起，單純由左到右排。
          這樣「結尾的底線」自然排在最後，不必再判斷它是不是在文字右邊。 */
+      /* 表格模式不理會偵測到的橫線：表格的格線、標題色塊邊緣都會被判成底線，
+         補成 ______ 就變成「標題列全是填空」。填空題模式才需要它們。 */
+      var useLead = gapMode === 'blank' ? mine : [];
       var seq = row.parts.map(function (p) {
         return { left: p.left, right: p.right, t: p.t };
-      }).concat(mine.map(function (u) {
+      }).concat(useLead.map(function (u) {
         return { left: u.x1, right: u.x2, t: null };
       })).sort(function (a, b) { return a.left - b.left; });
 
@@ -865,6 +932,25 @@
       /* 跳格前後不要再補空白，不然對齊會差一格 */
       return out.join(' ').replace(/ *\t */g, '\t');
     }).join('\n');
+  }
+
+  /* 轉出來的表格要對齊，跳格間隔得比「最長的那一欄」再寬一點。
+     固定 4 個中文字寬時，strong/stronger 這種較長的欄位會超過一格、
+     跳到下一格，就跟其他列錯開了。中文字算兩倍寬。 */
+  function tabWidthFor(text) {
+    var T = String.fromCharCode(9), max = 0;
+    String(text || '').split('\n').forEach(function (line) {
+      if (line.indexOf(T) < 0) return;
+      line.split(T).forEach(function (cell) {
+        var w = 0;
+        for (var i = 0; i < cell.length; i++) {
+          w += /[\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(cell.charAt(i)) ? 2 : 1;
+        }
+        if (w > max) max = w;
+      });
+    });
+    if (!max) return 0;                       // 沒有跳格就不用設
+    return Math.max(6, Math.min(36, max + 3));
   }
 
   function ocrBlock(b, el, lang, gapMode) {
@@ -911,7 +997,7 @@
         var lead = findUnderlines(src, f, textH);
         var text = tidyOcr(assembleOcr(j.lines, lead, gapMode));
         if (!text) { toast('這張圖沒有辨識到文字'); return; }
-        addTextAfter(b, text);
+        addTextAfter(b, text, tabWidthFor(text));
         toast('已轉成 ' + text.split('\n').length + ' 行文字' +
           (gapMode === 'blank' ? '' : '，欄位用跳格對齊') + ' —— 請先校對錯字再標記');
       }).catch(function (e) {
@@ -960,10 +1046,12 @@
     });
   }
 
-  function addTextAfter(b, text) {
+  function addTextAfter(b, text, tab) {
     var i = note.blocks.indexOf(b);
     var nb = M.newBlock('text', { html: esc(text).replace(/\n/g, '<br>') });
+    if (tab) nb.tab = tab;                    // 這一塊自己的跳格間隔（單位：字元寬）
     note.blocks.splice(i + 1, 0, nb);
+    pushBlockHist({ kind: 'add', block: nb, index: i + 1 });
     renderBlocks();
     markDirty();
   }
@@ -985,6 +1073,7 @@
       if (i >= 0) idx = i + 1;
     }
     note.blocks.splice(idx, 0, b);
+    pushBlockHist({ kind: 'add', block: b, index: idx });
     renderBlocks();
     markDirty();
     if (focus !== false) {

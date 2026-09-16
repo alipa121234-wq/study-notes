@@ -310,6 +310,10 @@
   /* ---------- 在游標處插入文字（語音用） ---------- */
   Editor.insertTextAt = function (root, text) {
     if (!root || !text) return;
+    /* 用三連點或全選複製時，選取範圍會多含一個結尾換行，
+       照著貼會在最後多一個空行。結尾的換行一律去掉。 */
+    text = String(text).replace(/\n+$/, '');
+    if (!text) return;
     root.focus();
     var sel = global.getSelection();
     var range = null;
