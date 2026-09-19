@@ -1177,24 +1177,31 @@
     ctx.fillStyle = '#fff';                    // 透明的截圖墊白底，不然透明處會被當成黑色
     ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    /* 轉成灰階，取 RGB 裡最暗的那個通道。
-       講義常用淺藍、淺綠的字，OCR 對這種淺色字很容易漏讀，甚至把整欄
-       中文誤讀成直書（使用者那張助動詞表：可能可以、準時的「時」都不見了）。
-       淺藍字的紅色通道很暗，取最小值之後就變成深色字。
-       實測那張表的中文從 86 字變成 94 字（全部讀到）；黃色螢光筆底、
-       紅字、綠底白字、之前的填空講義和表格都沒有變差。 */
+    /* 同一張圖送兩個版本去辨識，挑結果好的那個。
+       講義常用淺藍、淺綠的字，OCR 對淺色字很容易漏讀，甚至把整欄中文
+       誤讀成直書。轉成灰階（取 RGB 最暗的通道）淺藍字就會變深 —— 但淺藍的
+       格線、虛線也跟著變深，被讀成「一」「——」，反而害整欄變成直書。
+       使用者的兩張助動詞表剛好一張需要灰階、一張不能灰階；字和格線同一個
+       顏色，沒辦法只挑字，所以兩個都跑，用 pickOcr 挑。
+       兩個同時送出，不會多等一倍時間。 */
+    var gv = document.createElement('canvas');
+    gv.width = cv.width; gv.height = cv.height;
     var px = ctx.getImageData(0, 0, cv.width, cv.height), d = px.data;
     for (var i = 0; i < d.length; i += 4) {
       var m = d[i] < d[i + 1] ? d[i] : d[i + 1];
       if (d[i + 2] < m) m = d[i + 2];
       d[i] = d[i + 1] = d[i + 2] = m;
     }
-    ctx.putImageData(px, 0, 0);
+    gv.getContext('2d').putImageData(px, 0, 0);
 
-    cv.toBlob(function (blob) {
-      if (!blob) { toast('圖片轉檔失敗'); return; }
+    var blobOf = function (c) {
+      return new Promise(function (ok, fail) {
+        c.toBlob(function (bl) { if (bl) ok(bl); else fail(new Error('圖片轉檔失敗')); }, 'image/png');
+      });
+    };
+    var send = function (blob) {
       /* 用相對路徑：部署到 GitHub Pages 時網址帶子路徑，絕對路徑會指到根目錄 */
-      fetch('ocr?lang=' + encodeURIComponent(lang), {
+      return fetch('ocr?lang=' + encodeURIComponent(lang), {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: blob
@@ -1204,21 +1211,45 @@
             if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
             return j;
           });
-      }).then(function (j) {
-        /* 用辨識到的文字高度中位數當基準去找底線 */
-        var hs = (j.lines || []).map(function (l) { return l.h; })
-          .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
-        var textH = hs.length ? hs[Math.floor(hs.length / 2)] / f : 0;
-        var lead = findUnderlines(src, f, textH);
-        var text = tidyOcr(assembleOcr(j.lines, lead, gapMode));
-        if (!text) { toast('這張圖沒有辨識到文字'); return; }
-        addTextAfter(b, text);   // 間隔由 syncTabWidth 依內容與寬度決定
-        toast('已轉成 ' + text.split('\n').length + ' 行文字' +
-          (gapMode === 'blank' ? '' : '，欄位用跳格對齊') + ' —— 請先校對錯字再標記');
-      }).catch(function (e) {
-        toast('辨識失敗：' + e.message);
       });
-    }, 'image/png');
+    };
+    Promise.all([blobOf(cv), blobOf(gv)]).then(function (bl) {
+      /* 灰階那份失敗就只用原圖；原圖失敗才算失敗（例如伺服器沒開） */
+      return Promise.all([send(bl[0]), send(bl[1]).catch(function () { return null; })]);
+    }).then(function (res) {
+      var j = pickOcr(res[0], res[1]);
+      /* 用辨識到的文字高度中位數當基準去找底線 */
+      var hs = (j.lines || []).map(function (l) { return l.h; })
+        .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
+      var textH = hs.length ? hs[Math.floor(hs.length / 2)] / f : 0;
+      var lead = findUnderlines(src, f, textH);
+      var text = tidyOcr(assembleOcr(j.lines, lead, gapMode));
+      if (!text) { toast('這張圖沒有辨識到文字'); return; }
+      addTextAfter(b, text);   // 間隔由 syncTabWidth 依內容與寬度決定
+      toast('已轉成 ' + text.split('\n').length + ' 行文字' +
+        (gapMode === 'blank' ? '' : '，欄位用跳格對齊') + ' —— 請先校對錯字再標記');
+    }).catch(function (e) {
+      toast('辨識失敗：' + e.message);
+    });
+  }
+
+  /* 原圖、灰階兩份辨識結果挑一個。
+     先比「被誤讀成直書」的行（ocr.ps1 對又高又窄的行會附 words）誰少，
+     這是最傷的錯誤，整欄中文會亂掉；平手再比讀到的字數，
+     格線被讀成的「一」「—」「…」不算；再平手用原圖。 */
+  function pickOcr(a, b) {
+    if (!b) return a;
+    var score = function (j) {
+      var tall = 0, chars = 0;
+      (j.lines || []).forEach(function (l) {
+        if (l.words) tall++;
+        chars += String(l.t || '').replace(/[\s一—―ー\-_.…·|｜]/g, '').length;
+      });
+      return { tall: tall, chars: chars };
+    };
+    var sa = score(a), sb = score(b);
+    if (sa.tall !== sb.tall) return sa.tall < sb.tall ? a : b;
+    return sb.chars > sa.chars ? b : a;
   }
 
   /**
