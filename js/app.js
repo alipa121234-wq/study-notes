@@ -3459,3 +3459,35 @@
     }
   });
 })();
+
+/* 有新版本時提醒重新整理。
+   頁面開著好幾天的話，跑的一直是當初載入的舊程式 —— 使用者就遇到：
+   圖片轉表格已經修好，他那個分頁還是舊版，結果跟修之前一模一樣，
+   而畫面上完全看不出來。回到這個分頁時去看一下 index.html 裡的版本號，
+   不一樣就跳出提示。不自動重新整理：可能正在打字。 */
+(function () {
+  var s = document.querySelector('script[src*="app.js?v="]');
+  var mv = s && /v=(\d+)/.exec(s.getAttribute('src'));
+  var mine = mv ? mv[1] : '';
+  if (!mine || !window.fetch) return;
+  var shown = false, last = 0;
+  function check() {
+    if (shown || Date.now() - last < 60000) return;
+    last = Date.now();
+    fetch('index.html?check=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+      return r.ok ? r.text() : '';
+    }).then(function (html) {
+      var m = /app\.js\?v=(\d+)/.exec(html || '');
+      if (!m || m[1] === mine) return;
+      shown = true;
+      var bar = document.createElement('div');
+      bar.id = 'updbar';
+      bar.innerHTML = '有新版本，重新整理後才會生效 <button type="button">重新整理</button>';
+      bar.querySelector('button').onclick = function () { location.reload(); };
+      document.body.appendChild(bar);
+    }).catch(function () {});
+  }
+  window.addEventListener('focus', check);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) check(); });
+  setInterval(check, 10 * 60 * 1000);
+})();
