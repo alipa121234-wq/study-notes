@@ -759,9 +759,10 @@
       .replace(/^l\.(?=\s)/gm, '1.')
       /* 英文單字中間冒出大寫（prOJect、tO）幾乎都是認錯，改回小寫；
          夾在字母裡的 0 是 o（t0 -> to）。開頭大寫的字（You、McDonald）不動。 */
-      .replace(/\b[a-z]+[A-Z][A-Za-z]*\b/g, function (w) { return w.toLowerCase(); })
+      /* 0 要先換成 o，pr0Ject 才會變成 proJect、再被下一條改成小寫 */
       .replace(/\b([A-Za-z]+)0\b/g, '$1o')
-      .replace(/([a-z])0(?=[a-z])/g, '$1o')
+      .replace(/([A-Za-z])0(?=[A-Za-z])/g, '$1o')
+      .replace(/\b[a-z]+[A-Z][A-Za-z]*\b/g, function (w) { return w.toLowerCase(); })
       /* 填空底線後面接標點時不留空白。這裡只能比對「同一行」的空白，
          用 \s 會把換行一起吃掉，行尾的填空就會跟下一行黏在一起 */
       .replace(/______[ \t]+(?=[,.;:!?，。、；：！？])/g, '______')
@@ -888,8 +889,29 @@
     return out;
   }
 
+  /* 表格的格線、色塊邊緣被讀成的雜字（「一 三」「——」「… …」）。
+     只由這些線條字組成的片段在表格模式直接丟掉；
+     但單獨一個、高度跟一般字差不多的「丨」其實是英文的 I
+     （使用者那張表的主詞 I 就被讀成丨）。比一般字高很多的是直的格線，照丟。 */
+  var LINE_JUNK = /^[\s一二三口丨|｜—―ー\-_.…·~～]+$/;
+  function dropLineJunk(lines) {
+    var hs = lines.map(function (l) { return l.h; }).filter(function (v) { return v > 0; })
+      .sort(function (a, b) { return a - b; });
+    var medH = hs[Math.floor(hs.length / 2)] || 20;
+    var out = [];
+    lines.forEach(function (l) {
+      var t = String(l.t || '').trim();
+      if (!LINE_JUNK.test(t)) { out.push(l); return; }
+      if (/^[丨|｜]$/.test(t) && l.h >= medH * 0.7 && l.h <= medH * 1.5) {
+        out.push({ t: 'I', x: l.x, y: l.y, w: l.w, h: l.h });
+      }
+    });
+    return out;
+  }
+
   function assembleOcr(lines, lead, gapMode) {
     lines = splitVerticalMisreads(lines || []);
+    if (gapMode !== 'blank') lines = dropLineJunk(lines);
     var items = lines.filter(function (l) {
       return l && String(l.t || '').trim() && l.h > 0;
     }).map(function (l) {
@@ -1159,7 +1181,11 @@
     toast('辨識中…');
 
     var w = img.naturalWidth, h = img.naturalHeight;
-    var f = Math.max(w, h) < 1600 ? 2 : 1;
+    /* 放大兩倍再辨識。原本只放大「小於 1600」的圖，使用者那張助動詞表
+       剛好 1600 寬沒被放大，辨識出來英文、中文全部錯欄（0/10）；
+       同一張放大兩倍就是 10/10。Windows OCR 最大可以吃 10000 px，
+       2400 以內放大到 4800 還很安全。 */
+    var f = Math.max(w, h) <= 2400 ? 2 : 1;
 
     /* 底線在「原始解析度」上找。放大用的平滑處理會把細線抹淡，
        本來就壓在半個像素上的線會淡到偵測不到。
