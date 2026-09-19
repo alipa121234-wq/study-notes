@@ -757,15 +757,23 @@
       .replace(CJK_GAP, '$1')
       /* 行首的編號「1.」很常被認成小寫 L；英文裡沒有以「l.」開頭的句子 */
       .replace(/^l\.(?=\s)/gm, '1.')
+      /* 英文單字中間冒出大寫（prOJect、tO）幾乎都是認錯，改回小寫；
+         夾在字母裡的 0 是 o（t0 -> to）。開頭大寫的字（You、McDonald）不動。 */
+      .replace(/\b[a-z]+[A-Z][A-Za-z]*\b/g, function (w) { return w.toLowerCase(); })
+      .replace(/\b([A-Za-z]+)0\b/g, '$1o')
+      .replace(/([a-z])0(?=[a-z])/g, '$1o')
       /* 填空底線後面接標點時不留空白。這裡只能比對「同一行」的空白，
          用 \s 會把換行一起吃掉，行尾的填空就會跟下一行黏在一起 */
       .replace(/______[ \t]+(?=[,.;:!?，。、；：！？])/g, '______')
       .replace(/ {2,}/g, ' ')
-      /* 欄位之間只留一個跳格 */
-      .replace(/ *\t[ \t]*/g, '\t')
+      /* 跳格前後的空白清掉。連續的跳格不能併：現在一個跳格就是一格，
+         中間有空格子的列（例如標題的「最高級」沒讀到）併掉就整列往左擠 */
+      .replace(/ *\t */g, '\t')
       .replace(/[ \t]+$/gm, '')
       .replace(/\n{3,}/g, '\n\n')
-      .trim();
+      /* 不能用 trim()：它會把跳格一起吃掉，表格第一列開頭的空欄位就不見了，
+         整列往左擠（使用者那張表的「例句」跑到第一格） */
+      .replace(/^[ \n]+|[ \n]+$/g, '');
   }
 
   var OCR_BLANK = '______';
@@ -858,8 +866,31 @@
    *   表格的欄位之間本來就空很開，一律當成填空的話，每個欄位中間都會冒出
    *   ______（使用者遇到的狀況）。真正偵測到底線的地方不受這個選項影響。
    */
+  /* 被 OCR 誤讀成「直書」的欄位拆回一個一個字。
+     表格每一列都是同一句「準時完成專案」、字又剛好上下對齊時，
+     Windows OCR 會把同一個位置的字由上往下串成一行（「完 準 完 準…」），
+     整欄中文就亂掉了（使用者遇到的狀況）。ocr.ps1 對這種又高又窄的行
+     會附上每個字自己的位置；如果這些字大多落在某一列橫排文字的高度內，
+     就是誤讀，拆回單字、讓它們回到各自的列。真的直書文字旁邊不會剛好
+     每個字都對到一列橫排文字，不受影響。 */
+  function splitVerticalMisreads(lines) {
+    var flat = lines.filter(function (l) { return !l.words && l.w > l.h; });
+    var out = [];
+    lines.forEach(function (l) {
+      if (!l.words || l.words.length < 2) { out.push(l); return; }
+      var hit = l.words.filter(function (w) {
+        var c = w.y + w.h / 2;
+        return flat.some(function (f) { return c >= f.y && c <= f.y + f.h; });
+      }).length;
+      if (hit >= l.words.length * 0.5) out.push.apply(out, l.words);
+      else out.push(l);
+    });
+    return out;
+  }
+
   function assembleOcr(lines, lead, gapMode) {
-    var items = (lines || []).filter(function (l) {
+    lines = splitVerticalMisreads(lines || []);
+    var items = lines.filter(function (l) {
       return l && String(l.t || '').trim() && l.h > 0;
     }).map(function (l) {
       return {
@@ -924,7 +955,7 @@
          數量反而比完整的四欄列還多；取最常見的就會把整張表壓成兩欄，
          後面的欄位全部黏在一起（使用者遇到的偏格）。
          但也不能無條件取最大 —— 偶爾一列被辨識成多切一刀就會多出一欄，
-         所以要求這個欄位數至少要有四分之一的列數支撐。 */
+         檢查方式見下面的 anchorsFor。 */
       /* 先把「同一格被切成兩段」接回去。
          OCR 有時候會把 latter（較後的）拆成 latter 和（較後的）兩段，
          直接拿去分欄的話，那一格就佔掉兩個欄位，整列往右擠一格
@@ -949,19 +980,30 @@
       rows.forEach(function (r) {
         if (r.segs.length >= 2) counts[r.segs.length] = (counts[r.segs.length] || 0) + 1;
       });
-      var need = Math.max(2, Math.ceil(rows.length * 0.25));
-      var M = 0;
-      Object.keys(counts).forEach(function (k) {
-        if (+k > M && +k <= 12 && counts[k] >= need) M = +k;
+      /* 只要有兩列以上就算數：像「主詞」那種跨很多列的合併儲存格，
+         只會有幾列旁邊剛好有字，比例一定很低。
+         為了不讓「某兩列多切了一刀」變成多一欄，算出來的基準線
+         彼此至少要隔兩個字高，不然就退一步用比較少的欄位數。 */
+      var anchorsFor = function (k) {
+        var full = rows.filter(function (r) { return r.segs.length === k; });
+        var a = [];
+        for (var ci = 0; ci < k; ci++) {
+          var xs = full.map(function (r) { return r.segs[ci].left; }).sort(function (x, y) { return x - y; });
+          a.push(xs[Math.floor(xs.length / 2)]);
+        }
+        for (var q = 1; q < k; q++) if (a[q] - a[q - 1] < medH * 2) return null;
+        return a;
+      };
+      var M = 0, anchors = null;
+      Object.keys(counts).map(Number).filter(function (k) {
+        return k <= 12 && counts[k] >= 2;
+      }).sort(function (x, y) { return y - x; }).some(function (k) {
+        anchors = anchorsFor(k);
+        if (anchors) M = k;
+        return !!anchors;
       });
 
       if (M >= 2) {
-        var full = rows.filter(function (r) { return r.segs.length === M; });
-        var anchors = [];
-        for (var ci = 0; ci < M; ci++) {
-          var xs = full.map(function (r) { return r.segs[ci].left; }).sort(function (a, b) { return a - b; });
-          anchors.push(xs[Math.floor(xs.length / 2)]);
-        }
         var assign = function (segs) {
           var cells = [], next = 0;
           segs.forEach(function (pt) {
@@ -1132,7 +1174,22 @@
     var ctx = cv.getContext('2d');
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
+    ctx.fillStyle = '#fff';                    // 透明的截圖墊白底，不然透明處會被當成黑色
+    ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    /* 轉成灰階，取 RGB 裡最暗的那個通道。
+       講義常用淺藍、淺綠的字，OCR 對這種淺色字很容易漏讀，甚至把整欄
+       中文誤讀成直書（使用者那張助動詞表：可能可以、準時的「時」都不見了）。
+       淺藍字的紅色通道很暗，取最小值之後就變成深色字。
+       實測那張表的中文從 86 字變成 94 字（全部讀到）；黃色螢光筆底、
+       紅字、綠底白字、之前的填空講義和表格都沒有變差。 */
+    var px = ctx.getImageData(0, 0, cv.width, cv.height), d = px.data;
+    for (var i = 0; i < d.length; i += 4) {
+      var m = d[i] < d[i + 1] ? d[i] : d[i + 1];
+      if (d[i + 2] < m) m = d[i + 2];
+      d[i] = d[i + 1] = d[i + 2] = m;
+    }
+    ctx.putImageData(px, 0, 0);
 
     cv.toBlob(function (blob) {
       if (!blob) { toast('圖片轉檔失敗'); return; }

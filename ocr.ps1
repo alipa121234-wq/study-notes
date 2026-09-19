@@ -85,19 +85,36 @@ foreach ($line in $result.Lines) {
     $n++
   }
   if ($n -eq 0) { continue }
-  [void]$lines.Add([pscustomobject]@{
+  $item = [ordered]@{
       t = $line.Text
       x = [Math]::Round($x1, 1)
       y = [Math]::Round($y1, 1)
       w = [Math]::Round($x2 - $x1, 1)
       h = [Math]::Round($y2 - $y1, 1)
-    })
+    }
+  # A tall, narrow "line" is usually a misread: when a table repeats the same
+  # words in every row, the characters line up vertically and the engine reads
+  # them top-to-bottom as vertical text. Send each word's own box so the page
+  # can put the characters back into their rows.
+  if ($n -ge 2 -and ($y2 - $y1) -gt 2 * ($x2 - $x1)) {
+    $ws = New-Object System.Collections.ArrayList
+    foreach ($wd in $line.Words) {
+      $r = $wd.BoundingRect
+      [void]$ws.Add([ordered]@{
+          t = $wd.Text
+          x = [Math]::Round($r.X, 1); y = [Math]::Round($r.Y, 1)
+          w = [Math]::Round($r.Width, 1); h = [Math]::Round($r.Height, 1)
+        })
+    }
+    $item.words = @($ws)
+  }
+  [void]$lines.Add([pscustomobject]$item)
 }
 
 # Write the file ourselves as UTF-8 without BOM -- going through the console
 # would re-encode into the OEM code page and mangle Chinese.
 try {
-  $json = ConvertTo-Json -InputObject @{ lines = @($lines) } -Depth 4 -Compress
+  $json = ConvertTo-Json -InputObject @{ lines = @($lines) } -Depth 6 -Compress
   [IO.File]::WriteAllText($Out, $json, (New-Object Text.UTF8Encoding $false))
 }
 catch {
