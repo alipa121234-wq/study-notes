@@ -1060,6 +1060,51 @@
             gi--;
           }
         }
+
+        /* 夾在兩列中間、又併不進任何一列的單一格，依序往下排。
+           使用者那張助動詞表：主詞欄是一格跨十列，I You She He We They 直排
+           在中間、行距比表格的列窄，You、We 就夾在兩列中間，各自變成一整列
+           空著的列。把同一欄連續的這一串字依序排進各列，看起來就跟原圖一樣
+           是直排的一串。
+           只處理「夾在中間」的：它上下兩列的距離跟一般列距差不多。表格中間
+           真的自己佔一列的小標題，會把上下兩列撐開，不受影響。 */
+        var midOf = function (g) { return (g.top + g.bot) / 2; };
+        var pgaps = [];
+        for (var pq = 1; pq < grid.length; pq++) pgaps.push(midOf(grid[pq]) - midOf(grid[pq - 1]));
+        pgaps.sort(function (a, b) { return a - b; });
+        var pitch = pgaps[Math.floor(pgaps.length / 2)] || medH * 1.5;
+        var orphan = grid.map(function (g, i) {
+          if (i === 0 || i === grid.length - 1 || countCells(g.cells) !== 1) return -1;
+          var c = 0;
+          while (g.cells[c] == null) c++;
+          var up = grid[i - 1], dn = grid[i + 1];
+          if (up.cells[c] == null && dn.cells[c] == null) return -1;
+          if (midOf(dn) - midOf(up) > pitch * 1.5) return -1;
+          return c;
+        });
+        var dropRow = {};
+        for (var oi = 0; oi < grid.length; oi++) {
+          var oc = orphan[oi];
+          if (oc < 0 || dropRow[oi]) continue;
+          var s0 = oi;
+          while (s0 > 0 && grid[s0 - 1].cells[oc] != null) s0--;
+          var vals = [], e0 = s0;
+          while (e0 < grid.length && grid[e0].cells[oc] != null) { vals.push(grid[e0].cells[oc]); e0++; }
+          var targets = [];
+          for (var ti = s0; ti < grid.length && targets.length < vals.length; ti++) {
+            if (orphan[ti] === oc) continue;
+            if (ti >= e0 && grid[ti].cells[oc] != null) break;
+            targets.push(ti);
+          }
+          if (targets.length < vals.length) continue;       // 下面沒有足夠的空位就不動
+          for (var tj = s0; tj < e0; tj++) {
+            if (orphan[tj] === oc) dropRow[tj] = true;
+            else grid[tj].cells[oc] = null;
+          }
+          targets.forEach(function (t, n) { grid[t].cells[oc] = vals[n]; });
+          oi = e0 - 1;
+        }
+        grid = grid.filter(function (g, i) { return !dropRow[i]; });
         return grid.map(function (g) {
           var cells = [];
           for (var k = 0; k < M; k++) cells.push(g.cells[k] == null ? '' : g.cells[k]);
@@ -2200,9 +2245,11 @@
     }
   });
 
-  /* Ctrl+滾輪調粗細 */
+  /* Ctrl+滾輪調粗細 —— 只在畫筆、螢光筆、橡皮擦模式。
+     打字模式要把 Ctrl+滾輪還給瀏覽器縮放畫面（原本一律攔下來，
+     使用者就沒辦法用 Ctrl+滾輪放大縮小）。 */
   $('#pagewrap').addEventListener('wheel', function (e) {
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey || Ink.mode === 'select') return;
     e.preventDefault();
     Ink.nudgeSize(e.deltaY < 0 ? 1 : -1);
   }, { passive: false });
