@@ -3499,6 +3499,149 @@
   /* 標了顏色之後接著打字，不要把新字也塗上同一個顏色（全域裝一次就好） */
   Editor.keepMarksClosed();
 
+  /* ============================================================
+     朗讀轉 MP3
+     手機螢幕一關，網頁的朗讀就被系統暫停，要有音檔才能一直聽。
+     由筆電的 Windows 內建語音念成 MP3（serve.py → tts.ps1 → ffmpeg），
+     存進備份用的 OneDrive 資料夾底下的「朗讀MP3」，手機的 OneDrive 直接播。
+     ============================================================ */
+  var ttsState = null;   // true 可以用；false 伺服器找不到 ffmpeg；undefined 伺服器是舊版
+
+  var MP3_MODES = {
+    recall: { label: '背誦：英文 → 停一下 → 中文 → 英文', tag: '背誦' },
+    reverse: { label: '反向：中文 → 停一下 → 英文', tag: '反向' },
+    read: { label: '朗讀：照順序念一遍', tag: '朗讀' }
+  };
+
+  /* 有選取文字就只轉選取的部分，沒有就整篇（所有文字區，表格一列算一行） */
+  function mp3Source() {
+    var sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount &&
+      $('#blocks').contains(sel.getRangeAt(0).commonAncestorContainer)) {
+      var t = sel.toString();
+      if (t.trim()) return { text: t, part: true };
+    }
+    return {
+      text: $$('#blocks .tblock .content').map(function (c) { return c.innerText; }).join('\n'),
+      part: false
+    };
+  }
+
+  /* 一行一組。同一行有英文也有中文才照背誦／反向的順序念，
+     只有一種語言的行（標題、說明）就直接念過去。
+     Windows 語音每句話結尾本來就會停大約一秒，下面的停頓是再額外加的：
+     背誦時英文念完實際會停 2.5 秒左右，夠在腦中想一下中文。 */
+  function mp3Items(text, mode) {
+    var items = [];
+    var P = function (ms) { items.push({ k: 'pause', ms: ms }); };
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var segs = Speak.segments(line);
+      if (!segs.length) return;
+      var en = segs.filter(function (s) { return s.kind === 'en'; }).map(function (s) { return s.text; }).join(' ');
+      var zh = segs.filter(function (s) { return s.kind === 'zh'; }).map(function (s) { return s.text; }).join('，');
+      if (mode === 'read' || !en || !zh) {
+        segs.forEach(function (s) { items.push({ k: s.kind, t: s.text }); });
+        P(500);
+        return;
+      }
+      if (mode === 'recall') {
+        items.push({ k: 'en', t: en }); P(1500);
+        items.push({ k: 'zh', t: zh }); P(200);
+        items.push({ k: 'en', t: en }); P(900);
+      } else {
+        items.push({ k: 'zh', t: zh }); P(1500);
+        items.push({ k: 'en', t: en }); P(900);
+      }
+    });
+    return items;
+  }
+
+  function mp3Name(mode) {
+    var d = new Date(), pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var title = String(note.title || '').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 40) || '未命名筆記';
+    return title + '_' + MP3_MODES[mode].tag + '_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+      '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.mp3';
+  }
+
+  function downloadBlob(blob, name) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }
+
+  var mp3Busy = false;
+  function makeMp3(mode) {
+    if (mp3Busy) { toast('上一個 MP3 還在產生中'); return; }
+    if (ttsState === undefined) {
+      alert('「轉 MP3」是新加的功能，要重開伺服器才會生效：\n\n' +
+        '1. 關掉那個黑色的「StudyNote」視窗\n2. 再點一次「啟動筆記工具」');
+      return;
+    }
+    if (ttsState === false) { toast('這台電腦找不到 ffmpeg，沒辦法轉成 MP3'); return; }
+    var src = mp3Source();
+    var items = mp3Items(src.text, mode);
+    var n = items.filter(function (i) { return i.k !== 'pause'; }).length;
+    if (!n) { toast(src.part ? '選取的部分沒有可以念的文字' : '這份筆記沒有可以念的文字'); return; }
+
+    /* 資料夾的權限要在點擊當下要，等 MP3 做好才要會被瀏覽器擋掉 */
+    var dirP = !canFolder ? Promise.resolve(null) : backupDir(false).then(function (dir) {
+      return dir.getDirectoryHandle('朗讀MP3', { create: true }).then(function (sub) {
+        return { dir: dir, sub: sub };
+      });
+    }).catch(function (err) { return { err: err }; });
+
+    var btn = $('#btnMp3'), old = btn.textContent;
+    mp3Busy = true;
+    btn.disabled = true;
+    btn.textContent = '⏳ 產生中…';
+    toast('正在產生 MP3（' + (src.part ? '選取的部分' : '整篇') + '，' + n + ' 段），長的筆記要等一下');
+    var done = function () { mp3Busy = false; btn.disabled = false; btn.textContent = old; };
+
+    fetch('tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items, rate: -1 })
+    }).then(function (r) {
+      if (r.ok) return r.blob();
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        throw new Error(j.error || ('HTTP ' + r.status));
+      });
+    }).then(function (blob) {
+      var name = mp3Name(mode);
+      var sec = Math.round(blob.size * 8 / 64000);          // 64kbps
+      var len = sec >= 60 ? Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒' : sec + ' 秒';
+      return dirP.then(function (d) {
+        if (!d || d.err) {
+          downloadBlob(blob, name);
+          if (d && d.err && d.err.name !== 'AbortError') toast('沒辦法存進備份資料夾，已改成下載：' + name + '（' + len + '）');
+          else toast('已下載 ' + name + '（' + len + '）');
+          return;
+        }
+        return d.sub.getFileHandle(name, { create: true })
+          .then(function (fh) { return fh.createWritable(); })
+          .then(function (w) { return w.write(blob).then(function () { return w.close(); }); })
+          .then(function () {
+            toast('已存到「' + d.dir.name + '／朗讀MP3」：' + name + '（' + len + '）');
+          });
+      });
+    }).catch(function (e) {
+      toast('轉 MP3 失敗：' + ((e && e.message) || e));
+    }).then(done, done);
+  }
+
+  $('#btnMp3').addEventListener('click', function (e) {
+    var src = mp3Source();
+    var items = [{ head: src.part ? '把「選取的部分」念成 MP3' : '把「整篇筆記」念成 MP3（先選取文字就只轉那一段）' }];
+    Object.keys(MP3_MODES).forEach(function (m) {
+      items.push({ label: MP3_MODES[m].label, fn: function () { makeMp3(m); } });
+    });
+    popup(e.currentTarget, items);
+  });
+
   /* 圖片轉文字要靠本機的 Python 伺服器。部署到靜態主機之後那個端點不存在，
      按鈕留著只會讓人按了出錯，所以要先判斷。
      先用網址判斷是不是本機／區網 —— 直接對靜態主機發探測請求的話，
@@ -3509,7 +3652,10 @@
   } else {
     fetch('health', { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) { document.body.classList.toggle('no-ocr', !(j && j.ocr)); })
+      .then(function (j) {
+        document.body.classList.toggle('no-ocr', !(j && j.ocr));
+        ttsState = j ? j.tts : null;          // 舊版伺服器沒有這個欄位 -> undefined
+      })
       .catch(function () { document.body.classList.add('no-ocr'); });
   }
 

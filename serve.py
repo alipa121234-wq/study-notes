@@ -37,6 +37,22 @@ OCR_LANGS = ('zh-Hant-TW', 'en-US', 'en-GB')
 OCR_TIMEOUT = 60
 MAX_UPLOAD = 24 * 1024 * 1024
 
+# 朗讀轉 MP3：Windows 內建語音（tts.ps1）念成 WAV，再用 ffmpeg 轉成 MP3。
+# 手機螢幕關掉之後網頁的朗讀會被暫停，要有音檔才能一直聽。
+TTS_SCRIPT = 'tts.ps1'
+TTS_TIMEOUT = 900                 # 很長的筆記念起來要好幾分鐘
+TTS_MAX_ITEMS = 6000
+TTS_MAX_CHARS = 120000
+
+
+def find_ffmpeg():
+    """PATH 上找不到就看 ~/bin（使用者手動放的那一份）。"""
+    p = shutil.which('ffmpeg')
+    if p:
+        return p
+    cand = os.path.join(os.path.expanduser('~'), 'bin', 'ffmpeg.exe')
+    return cand if os.path.exists(cand) else None
+
 # 這些型別要補上 charset=utf-8，否則直接開啟 .js/.css 會是亂碼
 TEXT_TYPES = (
     'text/html', 'text/css', 'text/plain', 'text/javascript',
@@ -69,19 +85,93 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         # 讓前端知道「這份頁面是由本機的 Python 在服務」，因而有 OCR 可用。
         # 部署到靜態主機之後這個端點不存在，前端就會把 🔤 按鈕藏起來。
         if urllib.parse.urlparse(self.path).path == '/health':
-            self._json(200, {'ocr': True})
+            self._json(200, {'ocr': True, 'tts': bool(find_ffmpeg())})
             return
         super().do_GET()
 
     # ---------- 圖片轉文字 ----------
     def do_POST(self):
-        if urllib.parse.urlparse(self.path).path != '/ocr':
+        path = urllib.parse.urlparse(self.path).path
+        if path == '/tts':
+            try:
+                mp3 = self._tts()
+            except Exception as e:                  # noqa: BLE001 一律回給前端顯示
+                self._json(500, {'error': str(e) or e.__class__.__name__})
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'audio/mpeg')
+            self.send_header('Content-Length', str(len(mp3)))
+            self.end_headers()
+            self.wfile.write(mp3)
+            return
+        if path != '/ocr':
             self.send_error(404, 'Not Found')
             return
         try:
             self._json(200, self._ocr())
         except Exception as e:                      # noqa: BLE001 一律回給前端顯示
             self._json(500, {'error': str(e) or e.__class__.__name__})
+
+    def _tts(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        if n <= 0 or n > 4 * 1024 * 1024:
+            raise ValueError('朗讀內容太長或是空的')
+        job = json.loads(self.rfile.read(n).decode('utf-8'))
+
+        # 只收我們認得的欄位，其餘丟掉；文字寫進檔案交給腳本，不會進到命令列
+        items, chars = [], 0
+        for it in (job.get('items') or [])[:TTS_MAX_ITEMS]:
+            k = it.get('k')
+            if k == 'pause':
+                items.append({'k': 'pause', 'ms': max(0, min(20000, int(it.get('ms') or 0)))})
+            elif k in ('en', 'zh'):
+                t = str(it.get('t') or '')[:2000]
+                chars += len(t)
+                items.append({'k': k, 't': t})
+        if not any(i['k'] != 'pause' for i in items):
+            raise ValueError('沒有可以念的文字')
+        if chars > TTS_MAX_CHARS:
+            raise ValueError('內容太長（上限 %d 字），請分成幾段轉' % TTS_MAX_CHARS)
+        rate = max(-5, min(5, int(job.get('rate') or 0)))
+
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            raise RuntimeError('這台電腦找不到 ffmpeg，沒辦法轉成 MP3')
+        here = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(here, TTS_SCRIPT)
+        if not os.path.exists(script):
+            raise RuntimeError('找不到 %s，請確認它跟 serve.py 在同一個資料夾' % TTS_SCRIPT)
+
+        d = tempfile.mkdtemp(prefix='studynote-tts-')
+        src = os.path.join(d, 'job.json')
+        wav = os.path.join(d, 'out.wav')
+        mp3 = os.path.join(d, 'out.mp3')
+        try:
+            with open(src, 'w', encoding='utf-8') as f:
+                json.dump({'items': items, 'rate': rate}, f, ensure_ascii=False)
+            p = subprocess.run(
+                ['powershell', '-NoProfile', '-NonInteractive',
+                 '-ExecutionPolicy', 'Bypass', '-File', script,
+                 '-In', src, '-Out', wav],
+                capture_output=True, timeout=TTS_TIMEOUT,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if p.returncode != 0 or not os.path.exists(wav):
+                err = (p.stderr or b'').decode('utf-8', 'replace')
+                msg = err.split('TTS_ERROR:', 1)[1].strip() if 'TTS_ERROR:' in err else ''
+                raise RuntimeError('語音合成失敗' + ('：' + msg[:200] if msg else ''))
+            # 單聲道 64kbps：人聲夠清楚，一小時大約 28 MB
+            q = subprocess.run(
+                [ffmpeg, '-v', 'error', '-y', '-i', wav, '-ac', '1', '-b:a', '64k', mp3],
+                capture_output=True, timeout=TTS_TIMEOUT,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if q.returncode != 0 or not os.path.exists(mp3):
+                raise RuntimeError('轉成 MP3 失敗')
+            with open(mp3, 'rb') as f:
+                return f.read()
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('朗讀內容太長，處理逾時，請分成幾段轉')
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
