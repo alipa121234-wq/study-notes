@@ -909,7 +909,63 @@
     return out;
   }
 
-  function assembleOcr(lines, lead, gapMode) {
+  /**
+   * 找表格的橫線（列與列之間的分隔線、標題色塊的上下緣）。
+   * findUnderlines 是為填空題設計的：要夠深、長度以文字高為準、還會排除壓在
+   * 文字底下的線，表格那種很淡又很長的框線它抓不到。
+   * 這裡專門找「整列幾乎連在一起的有色像素」。
+   * 為什麼需要它：一格裡有好幾行的時候（例句欄放英文句子和中文翻譯、
+   * 或是一整塊說明），只有框線分得出哪幾行屬於同一列 —— 光看行距會把
+   * 一列拆成好幾列（使用者那兩張 indicate、bid 的圖）。
+   * @param cv    原始解析度的圖
+   * @param scale 回傳座標要乘的倍率，好對上 OCR 的座標系
+   */
+  function findRules(cv, scale) {
+    var w = cv.width, h = cv.height;
+    if (!w || !h) return [];
+    var d = cv.getContext('2d').getImageData(0, 0, w, h).data;
+    /* 表格線常常很淡（淺青、淺灰），門檻要放寬；線也常被文字或格子切斷，
+       所以容許一段空白還算同一條。但這樣一來「夠長的一行文字」也可能被
+       當成線，再加兩個條件擋掉：
+         1. 整條幾乎都是有顏色的（文字行中間空隙多，密度不夠）
+         2. 線很細（文字行會有十幾列都這麼長，線只有一兩列） */
+    var need = w * 0.55, gapOk = Math.max(4, Math.round(w * 0.01));
+    var hits = [], y, x, i, run, best, hole, ink, base;
+    for (y = 0; y < h; y++) {
+      run = 0; best = 0; hole = 0; ink = 0; base = y * w * 4;
+      for (x = 0; x < w; x++) {
+        i = base + x * 4;
+        if (d[i] < 245 || d[i + 1] < 245 || d[i + 2] < 245) {
+          ink++; run += hole + 1; hole = 0;
+          if (run > best) best = run;
+        } else {
+          hole++;
+          if (hole > gapOk) { run = 0; hole = 0; }
+        }
+      }
+      if (best >= need && ink >= best * 0.8) hits.push(y);
+    }
+    var bands = [], cur = null;
+    hits.forEach(function (v) {
+      if (cur && v - cur.y2 <= 2) { cur.y2 = v; return; }
+      cur = { y1: v, y2: v };
+      bands.push(cur);
+    });
+    var out = [];
+    bands.forEach(function (b) {
+      var thick = b.y2 - b.y1;
+      if (thick <= 5) {                       // 細線：一條分隔
+        var m = (b.y1 + b.y2) / 2;
+        out.push({ y1: m * scale, y2: m * scale });
+        return;
+      }
+      if (thick > h * 0.5) return;            // 整張圖都這樣 = 底色，不是線
+      out.push({ y1: b.y1 * scale, y2: b.y2 * scale });   // 色塊：上下緣各一條
+    });
+    return out;
+  }
+
+  function assembleOcr(lines, lead, gapMode, rules) {
     lines = splitVerticalMisreads(lines || []);
     if (gapMode !== 'blank') lines = dropLineJunk(lines);
     var items = lines.filter(function (l) {
@@ -988,7 +1044,11 @@
         r.parts.forEach(function (p) {
           if (cur && (p.left - cur.right) < r.h * 1.2) {
             /* 幾乎貼在一起的（latter 和它後面的括號）接起來不留空白 */
-            cur.t += ((p.left - cur.right) > r.h * 0.25 ? ' ' : '') + p.t;
+            /* 貼得很近就不留空白（latter 和後面的括號），
+               但兩邊都是英數時一定要留，不然會變成 forthat、atthe */
+            var tight = (p.left - cur.right) <= r.h * 0.25 &&
+              !(/[A-Za-z0-9]$/.test(cur.t) && /^[A-Za-z0-9]/.test(p.t));
+            cur.t += (tight ? '' : ' ') + p.t;
             cur.right = Math.max(cur.right, p.right);
             return;
           }
@@ -1027,7 +1087,7 @@
 
       if (M >= 2) {
         var assign = function (segs) {
-          var cells = [], next = 0;
+          var cells = [], right = [], next = 0;
           segs.forEach(function (pt) {
             var bi = next, bd = Infinity;
             for (var i = next; i < M; i++) {
@@ -1035,18 +1095,136 @@
               if (d < bd) { bd = d; bi = i; }
             }
             cells[bi] = cells[bi] ? cells[bi] + ' ' + pt.t : pt.t;
+            right[bi] = Math.max(right[bi] || 0, pt.right);
             next = Math.min(bi + 1, M - 1);
           });
-          return cells;
+          return { cells: cells, right: right };
         };
         var grid = rows.map(function (r) {
-          return { cells: assign(r.segs), top: r.top, bot: r.bot };
+          var a = assign(r.segs);
+          return { cells: a.cells, right: a.right, top: r.top, bot: r.bot };
         });
         var countCells = function (cells) {
           var n = 0;
           for (var i = 0; i < M; i++) if (cells[i] != null) n++;
           return n;
         };
+
+        /* 一格裡有好幾行的欄位（例句欄放了英文句子和中文翻譯，長句子還會折行）。
+           不處理的話，一個例句會被拆成三列，同一列的單字、詞性也跟著跑位
+           （使用者那張 indicate 衍生字表）。
+           認法：這種欄位的行數會比其他欄位多好幾倍。認出來之後整欄先抽走、
+           依行距切成一塊一塊，剩下的行剛好每個表格列一行，分完列再把每一塊
+           放回垂直位置對得上的那一列。
+           一塊裡面：上一行如果快貼到欄位右邊，表示是同一句被折行，用空白接；
+           否則是另起一行（英文句子換中文翻譯），用 \u2028 接，
+           轉成表格時會變成 <br>。 */
+        /* 有框線就用框線分列：兩條線之間的行都屬於同一列，
+           同一欄有好幾行就接起來（上一行快貼到欄位右邊 = 同一句被折行，
+           用空白接；否則另起一行，用 \u2028 接，轉成表格會變成 <br>）。 */
+        var usedRules = false;
+        if (rules && rules.length) {
+          var cuts = [];
+          rules.forEach(function (r) { cuts.push(r.y1, r.y2); });
+          cuts.sort(function (a, b) { return a - b; });
+          var bandOf = function (v) {
+            var n = 0;
+            for (var q = 0; q < cuts.length; q++) if (v > cuts[q]) n = q + 1;
+            return n;
+          };
+          var colRight = [];
+          grid.forEach(function (g) {
+            for (var c4 = 0; c4 < M; c4++) colRight[c4] = Math.max(colRight[c4] || 0, g.right[c4] || 0);
+          });
+          var banded = [], prev = null;
+          grid.forEach(function (g) {
+            var b = bandOf((g.top + g.bot) / 2);
+            if (prev && prev.band === b) {
+              for (var c5 = 0; c5 < M; c5++) {
+                if (g.cells[c5] == null) continue;
+                if (prev.cells[c5] == null) { prev.cells[c5] = g.cells[c5]; }
+                else {
+                  /* 上一行貼到欄位右邊、下一行又是小寫開頭 = 同一句英文被折行，
+                     用空白接。其他情況（下一行是中文翻譯、或像主詞那種一行一個字）
+                     都是另起一行。 */
+                  var wrapped = (prev.right[c5] || 0) >= (colRight[c5] || 0) - medH * 2.5 &&
+                    /^[a-z0-9,.;:)]/.test(g.cells[c5]) &&
+                    !/[)）。.!?！？」』]\s*$/.test(prev.cells[c5]);
+                  prev.cells[c5] += (wrapped ? ' ' : '\u2028') + g.cells[c5];
+                }
+                prev.right[c5] = g.right[c5];
+              }
+              prev.bot = Math.max(prev.bot, g.bot);
+              return;
+            }
+            g.band = b;
+            banded.push(g);
+            prev = g;
+          });
+          if (banded.length >= 1 && banded.length < grid.length) {
+            grid = banded;
+            usedRules = true;
+          }
+        }
+
+        var wrapCol = -1, blocks = [];
+        (function () {
+          var count = [], med, i, c;
+          for (c = 0; c < M; c++) count.push(0);
+          grid.forEach(function (g) {
+            for (c = 0; c < M; c++) if (g.cells[c] != null) count[c]++;
+          });
+          if (usedRules) return;            // 框線分得比猜的準
+          med = count.slice().sort(function (a, b) { return a - b; })[Math.floor(M / 2)];
+          for (c = 0; c < M; c++) if (count[c] >= 4 && count[c] > med * 1.5) wrapCol = c;
+          if (wrapCol < 0) return;
+
+          /* 先收集這一欄的每一行，還不要動 grid */
+          var pieces = [], maxRight = 0;
+          grid.forEach(function (g) {
+            if (g.cells[wrapCol] == null) return;
+            maxRight = Math.max(maxRight, g.right[wrapCol] || 0);
+            pieces.push({ t: g.cells[wrapCol], right: g.right[wrapCol] || 0, top: g.top, bot: g.bot, g: g });
+          });
+          if (pieces.length < 3) { wrapCol = -1; return; }
+
+          /* 同一格裡的行距，比列與列之間的間隔小很多。
+             取所有間隔的中位數當「行距」，超過它 1.8 倍的就是換到下一列。
+             用比例而不是固定值：不同大小的圖、不同行高都適用。 */
+          var gaps = [];
+          for (i = 1; i < pieces.length; i++) gaps.push(pieces[i].top - pieces[i - 1].bot);
+          var sorted = gaps.slice().sort(function (a, b) { return a - b; });
+          var medGap = sorted[Math.floor(sorted.length / 2)];
+          var split = Math.max(medGap * 1.8, medH * 0.4);
+
+          var cur = null;
+          pieces.forEach(function (piece, k) {
+            if (cur && gaps[k - 1] <= split) {
+              cur.parts.push(piece);
+              cur.bot = piece.bot;
+            } else {
+              cur = { parts: [piece], top: piece.top, bot: piece.bot };
+              blocks.push(cur);
+            }
+          });
+          /* 全部黏成一塊 = 判斷錯了，寧可不動 */
+          if (blocks.length < 2) { wrapCol = -1; blocks = []; return; }
+
+          blocks.forEach(function (b) {
+            var out = '';
+            b.parts.forEach(function (piece, k) {
+              if (!k) { out = piece.t; return; }
+              /* 上一行快貼到欄位右邊 = 同一句被折行，用空白接；
+                 否則是另起一行（英文句子換中文翻譯），用 \u2028 接，
+                 轉成表格時會變成 <br> */
+              out += (b.parts[k - 1].right >= maxRight - medH * 2.5 ? ' ' : '\u2028') + piece.t;
+            });
+            b.text = out;
+            b.parts.forEach(function (piece) { piece.g.cells[wrapCol] = null; });
+          });
+          grid = grid.filter(function (g) { return countCells(g.cells) > 0; });
+        })();
+
         for (var gi = 0; gi < grid.length - 1; gi++) {
           var A = grid[gi], B = grid[gi + 1];
           var an = countCells(A.cells), bn = countCells(B.cells);
@@ -1105,6 +1283,18 @@
           oi = e0 - 1;
         }
         grid = grid.filter(function (g, i) { return !dropRow[i]; });
+
+        /* 多行欄位的每一塊，放回垂直位置重疊最多的那一列 */
+        blocks.forEach(function (b) {
+          var best = -1, bestOv = -Infinity;
+          grid.forEach(function (g, i) {
+            var ov = Math.min(g.bot, b.bot) - Math.max(g.top, b.top);
+            if (ov > bestOv) { bestOv = ov; best = i; }
+          });
+          if (best < 0) return;
+          var had = grid[best].cells[wrapCol];
+          grid[best].cells[wrapCol] = had == null ? b.text : had + '\u2028' + b.text;
+        });
         return grid.map(function (g) {
           var cells = [];
           for (var k = 0; k < M; k++) cells.push(g.cells[k] == null ? '' : g.cells[k]);
@@ -1294,7 +1484,7 @@
         .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
       var textH = hs.length ? hs[Math.floor(hs.length / 2)] / f : 0;
       var lead = findUnderlines(src, f, textH);
-      var text = tidyOcr(assembleOcr(j.lines, lead, gapMode));
+      var text = tidyOcr(assembleOcr(j.lines, lead, gapMode, gapMode === 'blank' ? null : findRules(src, f)));
       if (!text) { toast('這張圖沒有辨識到文字'); return; }
       addTextAfter(b, text);   // 間隔由 syncTabWidth 依內容與寬度決定
       toast('已轉成 ' + text.split('\n').length + ' 行文字' +
@@ -1372,16 +1562,22 @@
     var T = String.fromCharCode(9);
     var lines = String(text || '').split('\n');
     var tabbed = lines.filter(function (l) { return l.indexOf(T) >= 0; }).length;
-    if (tabbed < 2) return esc(text).replace(/\n/g, '<br>');   // 不是表格就照舊
+    /* 只有一行、但那一行有欄位分隔的，也是表格
+       （整張圖就是一列的版面，例如左右各一塊的說明卡） */
+    if (tabbed < 2 && !(tabbed === 1 && lines.length === 1)) {
+      return esc(text).replace(/[\u2028\n]/g, '<br>');
+    }
     var cols = 0;
     lines.forEach(function (l) { cols = Math.max(cols, l.split(T).length); });
     var body = lines.map(function (l) {
       if (!l.trim()) return '';
       var cells = l.split(T);
       /* 沒有跳格的行（例如表格前的說明）橫跨整列 */
-      if (cells.length === 1) return '<tr><td colspan="' + cols + '">' + esc(l) + '</td></tr>';
+      /* 同一格裡的換行（例句欄的英文句子、中文翻譯各一行） */
+      var cell = function (v) { return esc(v == null ? '' : v).replace(/\u2028/g, '<br>'); };
+      if (cells.length === 1) return '<tr><td colspan="' + cols + '">' + cell(l) + '</td></tr>';
       var tds = '';
-      for (var i = 0; i < cols; i++) tds += '<td>' + esc(cells[i] == null ? '' : cells[i]) + '</td>';
+      for (var i = 0; i < cols; i++) tds += '<td>' + cell(cells[i]) + '</td>';
       return '<tr>' + tds + '</tr>';
     }).join('');
     return '<table class="ocr-table">' + body + '</table>';
