@@ -768,7 +768,10 @@
       /* 0 要先換成 o，pr0Ject 才會變成 proJect、再被下一條改成小寫 */
       .replace(/\b([A-Za-z]+)0\b/g, '$1o')
       .replace(/([A-Za-z])0(?=[A-Za-z])/g, '$1o')
-      .replace(/\b[a-z]+[A-Z][A-Za-z]*\b/g, function (w) { return w.toLowerCase(); })
+      .replace(/\b[a-z]+[A-Z][A-Za-z]*\b/g, function (w) {
+        /* iPhone、iPad、eBay 這種第二個字母大寫、後面又接小寫的是品牌寫法，不要動 */
+        return /^[a-z][A-Z][a-z]{2,}$/.test(w) ? w : w.toLowerCase();
+      })
       /* 填空底線後面接標點時不留空白。這裡只能比對「同一行」的空白，
          用 \s 會把換行一起吃掉，行尾的填空就會跟下一行黏在一起 */
       .replace(/______[ \t]+(?=[,.;:!?，。、；：！？])/g, '______')
@@ -1615,9 +1618,13 @@
       };
       var text = tidyOcr(assembleOcr(j.lines, leadFor(j), gapMode, rules));
       if (!text) { toast('這張圖沒有辨識到文字'); return; }
-      addTextAfter(b, text);   // 間隔由 syncTabWidth 依內容與寬度決定
-      toast('已轉成 ' + text.split('\n').length + ' 行文字' +
-        (gapMode === 'blank' ? '' : '，欄位用跳格對齊') + ' —— 請先校對錯字再標記');
+      /* 英文錯字校正（oadministrator、fi t、-aln…）。字典載不到就原文照用 */
+      return Spell.fix(text).then(function (r) {
+        addTextAfter(b, r.text);   // 間隔由 syncTabWidth 依內容與寬度決定
+        toast('已轉成 ' + r.text.split('\n').length + ' 行文字' +
+          (gapMode === 'blank' ? '' : '，欄位用跳格對齊') +
+          (r.count ? '，修正 ' + r.count + ' 個疑似錯字' : '') + ' —— 請先校對錯字再標記');
+      });
     }).catch(function (e) {
       toast('辨識失敗：' + e.message);
     });
