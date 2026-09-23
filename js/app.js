@@ -1482,6 +1482,15 @@
       return c;
     };
 
+    /* 底線偵測的門檻是以文字高度為基準的，所以要等辨識結果回來才能算 */
+    var leadFor = function (j) {
+      var hs = (j.lines || []).map(function (l) { return l.h; })
+        .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
+      var textH = hs.length ? hs[Math.floor(hs.length / 2)] / f : 0;
+      return findUnderlines(src, f, textH);
+    };
+    var lead0 = function () { return []; };      // 判斷有沒有缺格時用不到底線
+
     var blobOf = function (c) {
       return new Promise(function (ok, fail) {
         c.toBlob(function (bl) { if (bl) ok(bl); else fail(new Error('圖片轉檔失敗')); }, 'image/png');
@@ -1502,40 +1511,46 @@
       });
     };
     var wantEn = lang.indexOf('zh') === 0;
-    /* 一個一個做、做完就放掉，不要四張大圖同時留在記憶體裡 */
-    var blobs = [];
-    [cv, gray(variant(true)), gray(variant(false))].reduce(function (chain, c) {
-      return chain.then(function () {
-        return blobOf(c).then(function (bl) { blobs.push(bl); c.width = c.height = 0; });
-      });
-    }, Promise.resolve()).then(function () {
-      /* 第一份（原圖）失敗才算失敗，其他失敗就少一份參考 */
-      var soft = function (pr) { return pr.catch(function () { return null; }); };
-      return Promise.all([
-        send(blobs[0]),
-        soft(send(blobs[1])),
-        soft(send(blobs[2])),
-        wantEn ? soft(send(blobs[2], 'en-US')) : null
-      ]);
-    }).then(function (res) {
-      var zh = [res[0], res[1], res[2]].filter(Boolean);
-      var j = zh.reduce(function (best, x) { return pickOcr(best, x); });
-      /* 沒被選上的那幾份也拿來補：同一個位置沒東西才補進去 */
-      zh.forEach(function (x) { if (x !== j) j = mergeOcr(j, x, false); });
-      j = mergeOcr(j, res[3], true);
+    var soft = function (pr) { return pr.catch(function () { return null; }); };
+    var counts = [];
+    var rules = gapMode === 'blank' ? null : findRules(src, f);
+    /* 一個一個做、做完就放掉，不要好幾張大圖同時留在記憶體裡 */
+    var blobOfNew = function (smooth, toGray) {
+      var c = variant(smooth);
+      if (toGray) gray(c);
+      return blobOf(c).then(function (bl) { c.width = c.height = 0; return bl; });
+    };
+
+    /* 先跑「原圖」和「平滑灰階」兩份就好，大部分的圖這樣就夠了。
+       排成表格之後如果看起來有缺格，才再多跑兩份（不平滑灰階、英文引擎）。
+       四份全跑：大張的表格要十秒，一般的圖六秒；只跑兩份大約一半。 */
+    Promise.all([blobOfNew(true, false), blobOfNew(true, true)])
+      .then(function (bl) { return Promise.all([send(bl[0]), soft(send(bl[1]))]); })
+      .then(function (res) {
+        counts = res.map(function (x) { return x ? x.lines.length : null; });
+        var j = pickOcr(res[0], res[1]);
+        j = mergeOcr(j, res[0] === j ? res[1] : res[0], false);
+        if (!holesIn(j, lead0(), gapMode, rules)) return j;
+        toast('有幾格沒讀到，再試一次…');
+        return blobOfNew(false, true).then(function (bl2) {
+          return Promise.all([soft(send(bl2)), wantEn ? soft(send(bl2, 'en-US')) : null]);
+        }).then(function (more) {
+          counts = counts.concat(more.map(function (x) { return x ? x.lines.length : null; }));
+          if (more[0]) {
+            var best = pickOcr(j, more[0]);
+            var other = best === j ? more[0] : j;
+            j = mergeOcr(best, other, false);
+          }
+          return mergeOcr(j, more[1], true);
+        });
+      }).then(function (j) {
       /* 轉出來怪怪的時候，可以在瀏覽器主控台看最後一次的辨識結果
          （每一行的文字和座標），不用重跑一次 */
       window.__lastOcr = {
-        lines: j.lines, scale: f, size: [w, h],
-        counts: res.map(function (x) { return x ? x.lines.length : null; }), merged: j.lines.length,
+        lines: j.lines, scale: f, size: [w, h], counts: counts, merged: j.lines.length,
         bitmap: (typeof ImageBitmap !== 'undefined') && (img instanceof ImageBitmap)
       };
-      /* 用辨識到的文字高度中位數當基準去找底線 */
-      var hs = (j.lines || []).map(function (l) { return l.h; })
-        .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
-      var textH = hs.length ? hs[Math.floor(hs.length / 2)] / f : 0;
-      var lead = findUnderlines(src, f, textH);
-      var text = tidyOcr(assembleOcr(j.lines, lead, gapMode, gapMode === 'blank' ? null : findRules(src, f)));
+      var text = tidyOcr(assembleOcr(j.lines, leadFor(j), gapMode, rules));
       if (!text) { toast('這張圖沒有辨識到文字'); return; }
       addTextAfter(b, text);   // 間隔由 syncTabWidth 依內容與寬度決定
       toast('已轉成 ' + text.split('\n').length + ' 行文字' +
@@ -1577,6 +1592,32 @@
       if (stripped && latin(t) >= stripped.length * 0.5 && !clean(t) && clean(e.t)) hit.t = e.t;
     });
     return { lines: lines };
+  }
+
+  /**
+   * 這份辨識結果看起來有沒有「該有字卻空著」的格子。
+   * 有的話才值得多跑幾個版本去補（每多一個版本就多等好幾秒）。
+   * 整欄大多是空的不算 —— 那是跨很多列的合併儲存格（主詞欄），本來就該空著。
+   */
+  function holesIn(j, lead, gapMode, rules) {
+    if (gapMode === 'blank') return false;               // 填空題講義沒有欄位可比
+    var rows = tidyOcr(assembleOcr(j.lines, lead, gapMode, rules))
+      .split(String.fromCharCode(10)).map(function (l) { return l.split(String.fromCharCode(9)); });
+    var cols = 0;
+    rows.forEach(function (r) { cols = Math.max(cols, r.length); });
+    if (cols < 2 || rows.length < 3) return false;       // 不是表格就無從判斷
+    var filled = [];
+    for (var c = 0; c < cols; c++) {
+      filled.push(rows.filter(function (r) { return (r[c] || '').trim(); }).length);
+    }
+    var holes = 0;
+    rows.forEach(function (r) {
+      for (var c = 0; c < cols; c++) {
+        if (filled[c] < rows.length * 0.5) continue;     // 這一欄本來就大多是空的
+        if (!(r[c] || '').trim()) holes++;
+      }
+    });
+    return holes >= 2;
   }
 
   /* 原圖、灰階兩份辨識結果挑一個。
