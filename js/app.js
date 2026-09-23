@@ -1044,11 +1044,9 @@
         r.parts.forEach(function (p) {
           if (cur && (p.left - cur.right) < r.h * 1.2) {
             /* 幾乎貼在一起的（latter 和它後面的括號）接起來不留空白 */
-            /* 貼得很近就不留空白（latter 和後面的括號），
-               但兩邊都是英數時一定要留，不然會變成 forthat、atthe */
-            var tight = (p.left - cur.right) <= r.h * 0.25 &&
-              !(/[A-Za-z0-9]$/.test(cur.t) && /^[A-Za-z0-9]/.test(p.t));
-            cur.t += (tight ? '' : ' ') + p.t;
+            /* 貼得很近就不留空白：latter 和後面的括號、被切成兩半的
+               同一個字（fi + t -> fit）都要接回去，不能硬塞空白 */
+            cur.t += ((p.left - cur.right) > r.h * 0.25 ? ' ' : '') + p.t;
             cur.right = Math.max(cur.right, p.right);
             return;
           }
@@ -1411,16 +1409,30 @@
   }
 
   function ocrBlock(b, el, lang, gapMode) {
-    var img = $('img', el);
-    if (!img || !img.complete || !img.naturalWidth) { toast('圖片還沒載入完，稍等一下再試'); return; }
+    var el0 = $('img', el);
+    if (!el0 || !el0.complete || !el0.naturalWidth) { toast('圖片還沒載入完，稍等一下再試'); return; }
     toast('辨識中…');
+    /* 畫到 canvas 之前，瀏覽器會先套用圖片的色彩描述檔，淺色的字會被弄得更淡，
+       OCR 就整格漏掉（使用者那張不規則動詞表整列的 fit）。
+       改用 createImageBitmap 把色彩轉換關掉，同一張圖多讀到好幾格。
+       不支援的瀏覽器就照舊用 <img>。 */
+    var prep = (window.createImageBitmap && el0.src)
+      ? fetch(el0.src).then(function (r) { return r.blob(); })
+        .then(function (bl) { return createImageBitmap(bl, { colorSpaceConversion: 'none' }); })
+        .catch(function () { return el0; })
+      : Promise.resolve(el0);
+    prep.then(function (img) { ocrRun(b, img, lang, gapMode); });
+  }
 
-    var w = img.naturalWidth, h = img.naturalHeight;
-    /* 放大兩倍再辨識。原本只放大「小於 1600」的圖，使用者那張助動詞表
-       剛好 1600 寬沒被放大，辨識出來英文、中文全部錯欄（0/10）；
-       同一張放大兩倍就是 10/10。Windows OCR 最大可以吃 10000 px，
-       2400 以內放大到 4800 還很安全。 */
-    var f = Math.max(w, h) <= 2400 ? 2 : 1;
+  function ocrRun(b, img, lang, gapMode) {
+
+    var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    /* 放大兩倍再辨識：同一張圖不放大和放大兩倍差很多（使用者那張助動詞表
+       不放大是 0/10、放大是 10/10；那張不規則動詞表不放大會整列讀不到）。
+       門檻改用「放大後的總像素」而不是單邊長度 —— 長長一條的表格（1600x2436）
+       單邊超過門檻就被排除，其實放大完才 1560 萬像素，一點都不大。
+       Windows OCR 最大吃 10000 px，記憶體也要留意，所以兩個都要顧。 */
+    var f = (w * h * 4 <= 32e6 && Math.max(w, h) * 2 <= 9000) ? 2 : 1;
 
     /* 底線在「原始解析度」上找。放大用的平滑處理會把細線抹淡，
        本來就壓在半個像素上的線會淡到偵測不到。
@@ -1438,31 +1450,46 @@
     ctx.fillStyle = '#fff';                    // 透明的截圖墊白底，不然透明處會被當成黑色
     ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    /* 同一張圖送兩個版本去辨識，挑結果好的那個。
-       講義常用淺藍、淺綠的字，OCR 對淺色字很容易漏讀，甚至把整欄中文
-       誤讀成直書。轉成灰階（取 RGB 最暗的通道）淺藍字就會變深 —— 但淺藍的
-       格線、虛線也跟著變深，被讀成「一」「——」，反而害整欄變成直書。
-       使用者的兩張助動詞表剛好一張需要灰階、一張不能灰階；字和格線同一個
-       顏色，沒辦法只挑字，所以兩個都跑，用 pickOcr 挑。
-       兩個同時送出，不會多等一倍時間。 */
-    var gv = document.createElement('canvas');
-    gv.width = cv.width; gv.height = cv.height;
-    var px = ctx.getImageData(0, 0, cv.width, cv.height), d = px.data;
-    for (var i = 0; i < d.length; i += 4) {
-      var m = d[i] < d[i + 1] ? d[i] : d[i + 1];
-      if (d[i + 2] < m) m = d[i + 2];
-      d[i] = d[i + 1] = d[i + 2] = m;
-    }
-    gv.getContext('2d').putImageData(px, 0, 0);
+    /* 同一張圖做幾個版本去辨識，再把結果合起來。單一版本一定會漏東西：
+       - 淺藍、淺綠的字：轉灰階（取 RGB 最暗的通道）才讀得到；但淺色的格線、
+         虛線也會跟著變深，被讀成「一」「——」，害整欄中文變成直書，
+         所以原圖那份也要留著，由 pickOcr 挑比較好的當底。
+       - 放大方式也會影響：平滑放大會把細筆畫糊掉，改用不平滑（最近鄰）放大，
+         使用者那張不規則動詞表整列的 fit 才讀得出來。
+       - 中文引擎對夾在中文表格裡的短英文字常常整格漏掉（fly、fit），
+         英文引擎反而讀得到；英文引擎則完全讀不出中文，所以只拿它補洞、
+         修英文錯字（fa Ⅱ -> fall）。
+       全部同時送出，不會多等好幾倍時間。 */
+    var gray = function (c) {
+      var x = c.getContext('2d'), px = x.getImageData(0, 0, c.width, c.height), d = px.data;
+      for (var i = 0; i < d.length; i += 4) {
+        var m = d[i] < d[i + 1] ? d[i] : d[i + 1];
+        if (d[i + 2] < m) m = d[i + 2];
+        d[i] = d[i + 1] = d[i + 2] = m;
+      }
+      x.putImageData(px, 0, 0);
+      return c;
+    };
+    var variant = function (smooth) {
+      var c = document.createElement('canvas');
+      c.width = w * f; c.height = h * f;
+      var x = c.getContext('2d');
+      x.imageSmoothingEnabled = smooth;
+      if (smooth) x.imageSmoothingQuality = 'high';
+      x.fillStyle = '#fff';                  // 透明的截圖墊白底，不然透明處會被當成黑色
+      x.fillRect(0, 0, c.width, c.height);
+      x.drawImage(img, 0, 0, c.width, c.height);
+      return c;
+    };
 
     var blobOf = function (c) {
       return new Promise(function (ok, fail) {
         c.toBlob(function (bl) { if (bl) ok(bl); else fail(new Error('圖片轉檔失敗')); }, 'image/png');
       });
     };
-    var send = function (blob) {
+    var send = function (blob, useLang) {
       /* 用相對路徑：部署到 GitHub Pages 時網址帶子路徑，絕對路徑會指到根目錄 */
-      return fetch('ocr?lang=' + encodeURIComponent(lang), {
+      return fetch('ocr?lang=' + encodeURIComponent(useLang || lang), {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: blob
@@ -1474,11 +1501,35 @@
           });
       });
     };
-    Promise.all([blobOf(cv), blobOf(gv)]).then(function (bl) {
-      /* 灰階那份失敗就只用原圖；原圖失敗才算失敗（例如伺服器沒開） */
-      return Promise.all([send(bl[0]), send(bl[1]).catch(function () { return null; })]);
+    var wantEn = lang.indexOf('zh') === 0;
+    /* 一個一個做、做完就放掉，不要四張大圖同時留在記憶體裡 */
+    var blobs = [];
+    [cv, gray(variant(true)), gray(variant(false))].reduce(function (chain, c) {
+      return chain.then(function () {
+        return blobOf(c).then(function (bl) { blobs.push(bl); c.width = c.height = 0; });
+      });
+    }, Promise.resolve()).then(function () {
+      /* 第一份（原圖）失敗才算失敗，其他失敗就少一份參考 */
+      var soft = function (pr) { return pr.catch(function () { return null; }); };
+      return Promise.all([
+        send(blobs[0]),
+        soft(send(blobs[1])),
+        soft(send(blobs[2])),
+        wantEn ? soft(send(blobs[2], 'en-US')) : null
+      ]);
     }).then(function (res) {
-      var j = pickOcr(res[0], res[1]);
+      var zh = [res[0], res[1], res[2]].filter(Boolean);
+      var j = zh.reduce(function (best, x) { return pickOcr(best, x); });
+      /* 沒被選上的那幾份也拿來補：同一個位置沒東西才補進去 */
+      zh.forEach(function (x) { if (x !== j) j = mergeOcr(j, x, false); });
+      j = mergeOcr(j, res[3], true);
+      /* 轉出來怪怪的時候，可以在瀏覽器主控台看最後一次的辨識結果
+         （每一行的文字和座標），不用重跑一次 */
+      window.__lastOcr = {
+        lines: j.lines, scale: f, size: [w, h],
+        counts: res.map(function (x) { return x ? x.lines.length : null; }), merged: j.lines.length,
+        bitmap: (typeof ImageBitmap !== 'undefined') && (img instanceof ImageBitmap)
+      };
       /* 用辨識到的文字高度中位數當基準去找底線 */
       var hs = (j.lines || []).map(function (l) { return l.h; })
         .filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
@@ -1492,6 +1543,40 @@
     }).catch(function (e) {
       toast('辨識失敗：' + e.message);
     });
+  }
+
+  /**
+   * 把另一份辨識結果併進來：同一個位置沒東西的才補，已經有的不動。
+   * @param fromEn 另一份是英文引擎跑的 —— 除了補洞，還會用它修「整格都是英文、
+   *               中文引擎卻讀出怪符號」的格子（fa Ⅱ -> fall）。
+   *               中文格不會被動到：英文引擎根本讀不出中文，那些位置也早就有東西了。
+   */
+  function mergeOcr(base, extra, fromEn) {
+    if (!extra || !extra.lines || !base || !base.lines) return base;
+    var box = function (l) { return [l.x, l.y, l.x + l.w, l.y + l.h]; };
+    var overlap = function (a, b) {
+      var x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]);
+      var x2 = Math.min(a[2], b[2]), y2 = Math.min(a[3], b[3]);
+      if (x2 <= x1 || y2 <= y1) return 0;
+      var small = Math.min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]));
+      return small ? (x2 - x1) * (y2 - y1) / small : 0;
+    };
+    var latin = function (t) { return (String(t).match(/[A-Za-z]/g) || []).length; };
+    var clean = function (t) { return /^[A-Za-z0-9 ,.'\-]+$/.test(String(t).trim()); };
+    var lines = base.lines.slice();
+    (extra.lines || []).forEach(function (e) {
+      if (fromEn && !latin(e.t)) return;                       // 英文引擎讀中文只會出垃圾
+      var eb = box(e), hit = null;
+      for (var i = 0; i < lines.length; i++) {
+        if (overlap(eb, box(lines[i])) > 0.4) { hit = lines[i]; break; }
+      }
+      if (!hit) { lines.push(e); return; }
+      if (!fromEn) return;
+      /* 這一格本來就是英文，中文引擎卻讀出怪符號 -> 用英文引擎的 */
+      var t = String(hit.t).trim(), stripped = t.replace(/\s/g, '');
+      if (stripped && latin(t) >= stripped.length * 0.5 && !clean(t) && clean(e.t)) hit.t = e.t;
+    });
+    return { lines: lines };
   }
 
   /* 原圖、灰階兩份辨識結果挑一個。
