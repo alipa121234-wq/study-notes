@@ -1573,12 +1573,14 @@
   function ocrRun(b, img, lang, gapMode) {
 
     var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-    /* 放大兩倍再辨識：同一張圖不放大和放大兩倍差很多（使用者那張助動詞表
-       不放大是 0/10、放大是 10/10；那張不規則動詞表不放大會整列讀不到）。
-       門檻改用「放大後的總像素」而不是單邊長度 —— 長長一條的表格（1600x2436）
-       單邊超過門檻就被排除，其實放大完才 1560 萬像素，一點都不大。
-       Windows OCR 最大吃 10000 px，記憶體也要留意，所以兩個都要顧。 */
-    var f = (w * h * 4 <= 32e6 && Math.max(w, h) * 2 <= 9000) ? 2 : 1;
+    /* 放大倍率依圖片大小決定。字太小 OCR 就讀不準（使用者那張字尾表
+       1600x371 放大 2 倍時「單字」讀成「里子」，放大 3 倍才讀得到），
+       所以小圖多放大一點；但長長一條的表格（1600x2436）像素本來就多，
+       維持 2 倍就好，放太大又慢又吃記憶體。最少要 2 倍：那張助動詞表
+       不放大會整欄讀不到。再受記憶體與 Windows OCR 上限（邊長 1 萬）約束。 */
+    var px = w * h;
+    var f = px <= 1.2e6 ? 3 : 2;
+    while (f > 1 && (px * f * f > 30e6 || Math.max(w, h) * f > 8000)) f--;
 
     /* 底線在「原始解析度」上找。放大用的平滑處理會把細線抹淡，
        本來就壓在半個像素上的線會淡到偵測不到。
@@ -1675,19 +1677,20 @@
       .then(function (bl) { return Promise.all([send(bl[0]), soft(send(bl[1]))]); })
       .then(function (res) {
         counts = res.map(function (x) { return x ? x.lines.length : null; });
-        var j = pickOcr(res[0], res[1]);
-        j = mergeOcr(j, res[0] === j ? res[1] : res[0], false);
+        /* 以「彩色原圖」那份為底，再用灰階補它漏掉的。灰階把淺色字變深、
+           小圖也讀得多，但白字青底的標題會被它讀成垃圾（單字 -> 里子、
+           詞性 -> 一0）；彩色原圖對這種黑字、正常對比的中文讀得最乾淨。
+           所以中文以彩色為準，灰階只補彩色沒讀到的地方（淺藍字、被漏掉的格）。
+           彩色那份萬一失敗才退回灰階。 */
+        var j = res[0] || res[1];
+        if (res[0] && res[1]) j = mergeOcr(res[0], res[1], false);
         if (!holesIn(j, lead0(), gapMode, rules)) return j;
         toast('有幾格沒讀到，再試一次…');
         return blobOfNew(false, true).then(function (bl2) {
           return Promise.all([soft(send(bl2)), wantEn ? soft(send(bl2, 'en-US')) : null]);
         }).then(function (more) {
           counts = counts.concat(more.map(function (x) { return x ? x.lines.length : null; }));
-          if (more[0]) {
-            var best = pickOcr(j, more[0]);
-            var other = best === j ? more[0] : j;
-            j = mergeOcr(best, other, false);
-          }
+          if (more[0]) j = mergeOcr(j, more[0], false);   // 不平滑灰階：再補一次沒讀到的
           return mergeOcr(j, more[1], true);
         });
       }).then(function (j) {
