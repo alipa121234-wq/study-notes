@@ -757,6 +757,12 @@
       .replace(CJK_GAP, '$1')
       /* 行首的編號「1.」很常被認成小寫 L；英文裡沒有以「l.」開頭的句子 */
       .replace(/^l\.(?=\s)/gm, '1.')
+      /* 講義上的小圖示（「同」的圓形底、項目符號）會被讀成圓圈符號，
+         那不是內容，清掉。字母 o、O 不能碰 —— 分不出是圖示還是真的字 */
+      .replace(/[○●◎〇⊙◐◑]/g, '')
+      /* 圖示被讀成單獨一個 o、O 的也清掉（英文幾乎不會有單獨的 o），
+         但黏在字上的（oadministrator）不能動，分不出哪個 o 是圖示 */
+      .replace(/(^|\s)[oO](?=\s+[A-Za-z])/g, '$1')
       /* 英文單字中間冒出大寫（prOJect、tO）幾乎都是認錯，改回小寫；
          夾在字母裡的 0 是 o（t0 -> to）。開頭大寫的字（You、McDonald）不動。 */
       /* 0 要先換成 o，pr0Ject 才會變成 proJect、再被下一條改成小寫 */
@@ -1056,6 +1062,63 @@
         r.segs = segs;
       });
 
+      /* 有框線的話，先用框線把「視覺上的行」併成表格的列，再從列裡面分欄。
+         欄位不能只看單獨一行：像字尾表那樣，「-ain」是跨兩列、垂直置中的，
+         它幾乎不會跟別欄出現在同一行上，用行去統計就只認得出兩欄，
+         整個字尾欄被塞進單字欄（使用者遇到的狀況）。
+         併成列之後，一列裡本來就該看得到四欄。 */
+      var bandedAlready = false;
+      if (rules && rules.length) {
+        var cutList = [];
+        rules.forEach(function (r) { cutList.push(r.y1, r.y2); });
+        cutList.sort(function (a, b) { return a - b; });
+        var bandNo = function (v) {
+          var n = 0;
+          for (var q = 0; q < cutList.length; q++) if (v > cutList[q]) n = q + 1;
+          return n;
+        };
+        var byBand = {}, order = [];
+        rows.forEach(function (r) {
+          var k = bandNo((r.top + r.bot) / 2);
+          if (!byBand[k]) { byBand[k] = { top: r.top, bot: r.bot, items: [] }; order.push(k); }
+          byBand[k].top = Math.min(byBand[k].top, r.top);
+          byBand[k].bot = Math.max(byBand[k].bot, r.bot);
+          r.segs.forEach(function (sg) {
+            byBand[k].items.push({ t: sg.t, left: sg.left, right: sg.right, top: r.top });
+          });
+        });
+        var banded = order.map(function (k) {
+          var bd = byBand[k];
+          bd.items.sort(function (a, c) { return a.left - c.left; });
+          var cols = [], cur = null;
+          bd.items.forEach(function (it) {
+            if (cur && it.left - cur.right < medH * 1.5) {     // 同一欄的上下行、同一行的相鄰片段
+              cur.right = Math.max(cur.right, it.right);
+              cur.parts.push(it);
+              return;
+            }
+            cur = { left: it.left, right: it.right, parts: [it] };
+            cols.push(cur);
+          });
+          cols.forEach(function (c) {
+            c.parts.sort(function (a, d) { return (a.top - d.top) || (a.left - d.left); });
+            var width = c.right - c.left, out = '';
+            c.parts.forEach(function (pt, i) {
+              if (!i) { out = pt.t; return; }
+              var prev = c.parts[i - 1];
+              /* 上一行幾乎占滿整欄、下一行又是小寫開頭，而且上一行不是句號或
+                 右括號結尾 -> 同一句被折行，用空白接；其餘都是另起一行 */
+              var wrapped = (prev.right - prev.left) >= width * 0.6 &&
+                /^[a-z0-9,.;:)]/.test(pt.t) && !/[)）。.!?！？」』]\s*$/.test(prev.t);
+              out += (wrapped ? ' ' : '\u2028') + pt.t;
+            });
+            c.t = out;
+          });
+          return { segs: cols, top: bd.top, bot: bd.bot, h: medH, parts: bd.items };
+        });
+        if (banded.length >= 2) { rows = banded; bandedAlready = true; }
+      }
+
       var counts = {};
       rows.forEach(function (r) {
         if (r.segs.length >= 2) counts[r.segs.length] = (counts[r.segs.length] || 0) + 1;
@@ -1120,8 +1183,8 @@
         /* 有框線就用框線分列：兩條線之間的行都屬於同一列，
            同一欄有好幾行就接起來（上一行快貼到欄位右邊 = 同一句被折行，
            用空白接；否則另起一行，用 \u2028 接，轉成表格會變成 <br>）。 */
-        var usedRules = false;
-        if (rules && rules.length) {
+        var usedRules = bandedAlready;
+        if (!bandedAlready && rules && rules.length) {
           var cuts = [];
           rules.forEach(function (r) { cuts.push(r.y1, r.y2); });
           cuts.sort(function (a, b) { return a - b; });
