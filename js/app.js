@@ -929,21 +929,24 @@
    * @param cv    原始解析度的圖
    * @param scale 回傳座標要乘的倍率，好對上 OCR 的座標系
    */
-  function findRules(cv, scale) {
+  function findRules(cv, scale, vertical) {
     var w = cv.width, h = cv.height;
     if (!w || !h) return [];
     var d = cv.getContext('2d').getImageData(0, 0, w, h).data;
+    /* 直線就是把長寬對調來掃：外層走 x、內層走 y */
+    var LEN = vertical ? h : w, CNT = vertical ? w : h;
+    var at = function (a, b) { return vertical ? (b * w + a) * 4 : (a * w + b) * 4; };
     /* 表格線常常很淡（淺青、淺灰），門檻要放寬；線也常被文字或格子切斷，
        所以容許一段空白還算同一條。但這樣一來「夠長的一行文字」也可能被
        當成線，再加兩個條件擋掉：
          1. 整條幾乎都是有顏色的（文字行中間空隙多，密度不夠）
          2. 線很細（文字行會有十幾列都這麼長，線只有一兩列） */
-    var need = w * 0.55, gapOk = Math.max(4, Math.round(w * 0.01));
-    var hits = [], y, x, i, run, best, hole, ink, base;
-    for (y = 0; y < h; y++) {
-      run = 0; best = 0; hole = 0; ink = 0; base = y * w * 4;
-      for (x = 0; x < w; x++) {
-        i = base + x * 4;
+    var need = LEN * 0.55, gapOk = Math.max(4, Math.round(LEN * 0.01));
+    var hits = [], a, b, i, run, best, hole, ink;
+    for (a = 0; a < CNT; a++) {
+      run = 0; best = 0; hole = 0; ink = 0;
+      for (b = 0; b < LEN; b++) {
+        i = at(a, b);
         if (d[i] < 245 || d[i + 1] < 245 || d[i + 2] < 245) {
           ink++; run += hole + 1; hole = 0;
           if (run > best) best = run;
@@ -952,7 +955,12 @@
           if (hole > gapOk) { run = 0; hole = 0; }
         }
       }
-      if (best >= need && ink >= best * 0.8) hits.push(y);
+      /* 兩種都算：
+           細線 -> 連續一長條有色（中間允許一點斷）
+           色塊 -> 整列有色的比例夠高。標題色塊上印著白字，白字會把連續的
+                   線切斷，只看連續長度會把色塊誤判成上下兩塊，中間多一條
+                   切線，同一列就被切成兩列（使用者那張字尾表的標題）。 */
+      if ((best >= need && ink >= best * 0.8) || ink >= LEN * 0.75) hits.push(a);
     }
     var bands = [], cur = null;
     hits.forEach(function (v) {
@@ -968,7 +976,7 @@
         out.push({ y1: m * scale, y2: m * scale });
         return;
       }
-      if (thick > h * 0.5) return;            // 整張圖都這樣 = 底色，不是線
+      if (thick > CNT * 0.5) return;          // 整張圖都這樣 = 底色，不是線
       out.push({ y1: b.y1 * scale, y2: b.y2 * scale });   // 色塊：上下緣各一條
     });
     return out;
@@ -1071,9 +1079,9 @@
          整個字尾欄被塞進單字欄（使用者遇到的狀況）。
          併成列之後，一列裡本來就該看得到四欄。 */
       var bandedAlready = false;
-      if (rules && rules.length) {
+      if (rules && rules.h && rules.h.length) {
         var cutList = [];
-        rules.forEach(function (r) { cutList.push(r.y1, r.y2); });
+        rules.h.forEach(function (r) { cutList.push(r.y1, r.y2); });
         cutList.sort(function (a, b) { return a - b; });
         var bandNo = function (v) {
           var n = 0;
@@ -1087,7 +1095,7 @@
           byBand[k].top = Math.min(byBand[k].top, r.top);
           byBand[k].bot = Math.max(byBand[k].bot, r.bot);
           r.segs.forEach(function (sg) {
-            byBand[k].items.push({ t: sg.t, left: sg.left, right: sg.right, top: r.top });
+            byBand[k].items.push({ t: sg.t, left: sg.left, right: sg.right, top: r.top, bot: r.bot });
           });
         });
         var banded = order.map(function (k) {
@@ -1105,6 +1113,20 @@
           });
           cols.forEach(function (c) {
             c.parts.sort(function (a, d) { return (a.top - d.top) || (a.left - d.left); });
+            /* 同一格的同一段文字被兩個版本各讀出一次（單字 -> 「0 0 宀」和
+               「里子」），框的高度可能差很多；左右幾乎重疊、中心高度又差不到
+               一個字，就是同一段，留框比較高的那個（通常讀得比較完整） */
+            c.parts = c.parts.filter(function (pt, i) {
+              var prev = c.parts[i - 1];
+              if (!prev) return true;
+              var ox = Math.min(pt.right, prev.right) - Math.max(pt.left, prev.left);
+              var narrow = Math.min(pt.right - pt.left, prev.right - prev.left);
+              var dy = Math.abs((pt.top + pt.bot) / 2 - (prev.top + prev.bot) / 2);
+              var tall = Math.max(pt.bot - pt.top, prev.bot - prev.top);
+              if (!(narrow > 0 && ox / narrow > 0.6 && dy < tall * 0.9)) return true;
+              if (pt.bot - pt.top > prev.bot - prev.top) { prev.t = pt.t; }   // 留高的那個
+              return false;
+            });
             var width = c.right - c.left, out = '';
             c.parts.forEach(function (pt, i) {
               if (!i) { out = pt.t; return; }
@@ -1112,7 +1134,8 @@
               /* 上一行幾乎占滿整欄、下一行又是小寫開頭，而且上一行不是句號或
                  右括號結尾 -> 同一句被折行，用空白接；其餘都是另起一行 */
               var wrapped = (prev.right - prev.left) >= width * 0.6 &&
-                /^[a-z0-9,.;:)]/.test(pt.t) && !/[)）。.!?！？」』]\s*$/.test(prev.t);
+                /[A-Za-z0-9,]\s*$/.test(prev.t) &&      // 中文結尾的是另一行，不是折行
+                /^[a-z0-9,.;:)]/.test(pt.t);
               out += (wrapped ? ' ' : '\u2028') + pt.t;
             });
             c.t = out;
@@ -1140,7 +1163,8 @@
         for (var q = 1; q < k; q++) if (a[q] - a[q - 1] < medH * 2) return null;
         return a;
       };
-      var M = 0, anchors = null;
+      var M = 0, anchors = null, vbounds = null;
+
       Object.keys(counts).map(Number).filter(function (k) {
         return k <= 12 && counts[k] >= 2;
       }).sort(function (x, y) { return y - x; }).some(function (k) {
@@ -1149,14 +1173,70 @@
         return !!anchors;
       });
 
+      /* 圖上有畫直線（欄與欄之間的分隔線）的話，拿來補統計的不足：
+         使用者那張只有三列的字尾表樣本太少，統計猜成三欄、第三第四欄黏在
+         一起，而直線是明明白白畫在圖上的。
+         但直線不一定每一欄都有（助動詞表只在中間畫一條），所以只有在
+         「直線分出來的欄位不比統計少」時才採用，並且丟掉完全沒有文字的欄。 */
+      if (bandedAlready && rules && rules.v && rules.v.length) {
+        var xs = [];
+        rules.v.forEach(function (r) { xs.push((r.y1 + r.y2) / 2); });   // 直線的位置存在 y1/y2
+        xs.sort(function (a, b) { return a - b; });
+        /* 太靠邊的是外框，不是欄位分隔 */
+        var lefts = [], rights = [];
+        rows.forEach(function (r) {
+          r.segs.forEach(function (sg) { lefts.push(sg.left); rights.push(sg.right); });
+        });
+        var minX = Math.min.apply(null, lefts), maxX = Math.max.apply(null, rights);
+        var inner = xs.filter(function (v) { return v > minX && v < maxX; });
+        /* 同一條線可能被偵測成相鄰好幾條，太近的併成一條 */
+        var merged = [];
+        inner.forEach(function (v) {
+          if (merged.length && v - merged[merged.length - 1] < medH) return;
+          merged.push(v);
+        });
+        /* 丟掉沒有任何文字的欄（偵測到的直線有時會多一條） */
+        var used = function (lo, hi) {
+          var n = 0;
+          rows.forEach(function (r) {
+            r.segs.forEach(function (sg) {
+              var mid = (sg.left + sg.right) / 2;
+              if (mid > lo && mid <= hi) n++;
+            });
+          });
+          return n;
+        };
+        var keep = [];
+        for (var vi = 0; vi < merged.length; vi++) {
+          var lo = vi ? merged[vi - 1] : -Infinity;
+          var hi = merged[vi];
+          if (used(lo, hi)) keep.push(merged[vi]);
+        }
+        if (keep.length && !used(keep[keep.length - 1], Infinity)) keep.pop();
+        if (keep.length >= 1 && keep.length <= 11 && keep.length + 1 >= M) {
+          vbounds = keep;
+          M = keep.length + 1;
+          anchors = [minX].concat(keep);
+        }
+      }
+
       if (M >= 2) {
+        var colOfX = function (x) {
+          var n = 0;
+          for (var i = 0; i < vbounds.length; i++) if (x > vbounds[i]) n = i + 1;
+          return n;
+        };
         var assign = function (segs) {
           var cells = [], right = [], next = 0;
           segs.forEach(function (pt) {
             var bi = next, bd = Infinity;
-            for (var i = next; i < M; i++) {
-              var d = Math.abs(pt.left - anchors[i]);
-              if (d < bd) { bd = d; bi = i; }
+            if (vbounds) {
+              bi = colOfX((pt.left + pt.right) / 2);
+            } else {
+              for (var i = next; i < M; i++) {
+                var d = Math.abs(pt.left - anchors[i]);
+                if (d < bd) { bd = d; bi = i; }
+              }
             }
             cells[bi] = cells[bi] ? cells[bi] + ' ' + pt.t : pt.t;
             right[bi] = Math.max(right[bi] || 0, pt.right);
@@ -1187,9 +1267,9 @@
            同一欄有好幾行就接起來（上一行快貼到欄位右邊 = 同一句被折行，
            用空白接；否則另起一行，用 \u2028 接，轉成表格會變成 <br>）。 */
         var usedRules = bandedAlready;
-        if (!bandedAlready && rules && rules.length) {
+        if (!bandedAlready && rules && rules.h && rules.h.length) {
           var cuts = [];
-          rules.forEach(function (r) { cuts.push(r.y1, r.y2); });
+          rules.h.forEach(function (r) { cuts.push(r.y1, r.y2); });
           cuts.sort(function (a, b) { return a - b; });
           var bandOf = function (v) {
             var n = 0;
@@ -1579,7 +1659,8 @@
     var wantEn = lang.indexOf('zh') === 0;
     var soft = function (pr) { return pr.catch(function () { return null; }); };
     var counts = [];
-    var rules = gapMode === 'blank' ? null : findRules(src, f);
+    var rules = gapMode === 'blank' ? null
+      : { h: findRules(src, f, false), v: findRules(src, f, true) };
     /* 一個一個做、做完就放掉，不要好幾張大圖同時留在記憶體裡 */
     var blobOfNew = function (smooth, toGray) {
       var c = variant(smooth);
@@ -1648,12 +1729,25 @@
     };
     var latin = function (t) { return (String(t).match(/[A-Za-z]/g) || []).length; };
     var clean = function (t) { return /^[A-Za-z0-9 ,.'\-]+$/.test(String(t).trim()); };
+    /* 同一格在兩份裡被讀成不一樣的字（單字 -> 「0 0 宀」和「里子」），
+       框只差幾個像素，要當成同一格，不然同一列會被拆成兩列 */
+    var sameCell = function (a, b) {
+      if (overlap(a, b) > 0.25) return true;
+      /* 兩份讀到的框高度可能差很多（「0 0 宀」只框到上半部），重疊面積不夠看。
+         左右幾乎完全重疊、中心高度又差不到一個字，就是同一格。 */
+      var ox = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+      var narrow = Math.min(a[2] - a[0], b[2] - b[0]);
+      if (ox <= 0 || !narrow) return false;
+      var cyA = (a[1] + a[3]) / 2, cyB = (b[1] + b[3]) / 2;
+      var tall = Math.max(a[3] - a[1], b[3] - b[1]);
+      return ox / narrow > 0.6 && Math.abs(cyA - cyB) < tall * 0.9;
+    };
     var lines = base.lines.slice();
     (extra.lines || []).forEach(function (e) {
       if (fromEn && !latin(e.t)) return;                       // 英文引擎讀中文只會出垃圾
       var eb = box(e), hit = null;
       for (var i = 0; i < lines.length; i++) {
-        if (overlap(eb, box(lines[i])) > 0.4) { hit = lines[i]; break; }
+        if (sameCell(eb, box(lines[i]))) { hit = lines[i]; break; }
       }
       if (!hit) { lines.push(e); return; }
       if (!fromEn) return;
