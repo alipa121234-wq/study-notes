@@ -230,7 +230,10 @@ body.mode-draw .block .bar{display:none;}
 .cap:focus{color:var(--ink);}
 
 /* marks */
-.hl{border-radius:3px;padding:1px;box-decoration-break:clone;-webkit-box-decoration-break:clone;}
+/* 只留上下 padding，不要左右。左右 padding 會在螢光筆和相鄰文字（或另一段
+   螢光筆／字色）之間多擠出一個像素，看起來像空了一格
+   （representatives 顯示成 representative s）。 */
+.hl{border-radius:3px;padding:1px 0;box-decoration-break:clone;-webkit-box-decoration-break:clone;}
 .hl-1{background:var(--hl1);} .hl-2{background:var(--hl2);} .hl-3{background:var(--hl3);}
 .hl-4{background:var(--hl4);} .hl-5{background:var(--hl5);}
 .fc-1{color:var(--fc1);} .fc-2{color:var(--fc2);} .fc-3{color:var(--fc3);}
