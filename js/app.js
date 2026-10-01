@@ -1888,12 +1888,12 @@
       tbl = document.createElement('table');
       tbl.className = 'ocr-table wordfam-table';
       var head = document.createElement('tr');
-      head.innerHTML = '<td><b>單字</b></td><td><b>動</b></td><td><b>名</b></td><td><b>形</b></td><td><b>副</b></td>';
+      head.innerHTML = '<td><b>單字</b></td><td><b>中文</b></td><td><b>動</b></td><td><b>名</b></td><td><b>形</b></td><td><b>副</b></td>';
       tbl.appendChild(head);
       root.appendChild(tbl);
     }
     var tr = document.createElement('tr');
-    tr.innerHTML = '<td>' + esc(word) + '</td><td>' + cell(r.v) + '</td><td>' +
+    tr.innerHTML = '<td>' + esc(word) + '</td><td>' + (r.cn ? esc(r.cn) : '-') + '</td><td>' + cell(r.v) + '</td><td>' +
       cell(r.n) + '</td><td>' + cell(r.a) + '</td><td>' + cell(r.r) + '</td>';
     /* 表格經過復原（innerHTML 重新解析）後，瀏覽器會自己把現有的
        列包進隱形的 <tbody>；直接 tbl.appendChild(tr) 會把新列插在
@@ -1912,7 +1912,7 @@
     if (!window.WordForms) { toast('這個功能還沒載入好，稍等一下再試'); return; }
     toast('查詢「' + word + '」的詞性變化…');
     WordForms.lookup(word).then(function (r) {
-      if (!r) { toast('查不到「' + word + '」的詞性變化（WordNet 沒收這個字，或是沒有其他詞性的家族）'); return; }
+      if (!r) { toast('查不到「' + word + '」的資料（字典沒收這個字，或是拼字不對）'); return; }
       Editor.History.checkpoint(root);
       insertWordFormsTable(root, word, r);
       root.dispatchEvent(new Event('input'));
