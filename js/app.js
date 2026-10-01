@@ -1876,6 +1876,50 @@
     return '<table class="ocr-table">' + body + '</table>';
   }
 
+  /* 把查到的「四態」插進目前這個文字區的最後面，累積成一張詞性變化表
+     （跟使用者自己整理的字尾表外觀一致，沿用 .ocr-table 的樣式）。
+     同一區塊裡如果最後面已經有一張這種表，就多加一列，不會每記一個字
+     就另外開一張新表。 */
+  function insertWordFormsTable(root, word, r) {
+    var cell = function (arr) { return arr.length ? esc(arr.slice(0, 2).join('、')) : '-'; };
+    var last = root.lastElementChild;
+    var tbl = (last && last.tagName === 'TABLE' && last.classList.contains('wordfam-table')) ? last : null;
+    if (!tbl) {
+      tbl = document.createElement('table');
+      tbl.className = 'ocr-table wordfam-table';
+      var head = document.createElement('tr');
+      head.innerHTML = '<td><b>單字</b></td><td><b>動</b></td><td><b>名</b></td><td><b>形</b></td><td><b>副</b></td>';
+      tbl.appendChild(head);
+      root.appendChild(tbl);
+    }
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + esc(word) + '</td><td>' + cell(r.v) + '</td><td>' +
+      cell(r.n) + '</td><td>' + cell(r.a) + '</td><td>' + cell(r.r) + '</td>';
+    /* 表格經過復原（innerHTML 重新解析）後，瀏覽器會自己把現有的
+       列包進隱形的 <tbody>；直接 tbl.appendChild(tr) 會把新列插在
+       tbody 旁邊、而不是裡面，變成結構不一致。有 tbody 就插進去，
+       沒有（剚建立好的新表）就直接插在 table 底下 */
+    (tbl.tBodies[0] || tbl).appendChild(tr);
+  }
+
+  /**
+   * 查一個英文字的四態，插進目前文字區最後面。
+   * @param root 目前的文字區（Editor.currentRoot()）
+   * @param word 要查的字（通常是選取的文字）
+   */
+  function lookupWordForms(root, word) {
+    if (!root || !word) { toast('先選取要查的英文字'); return; }
+    if (!window.WordForms) { toast('這個功能還沒載入好，稍等一下再試'); return; }
+    toast('查詢「' + word + '」的詞性變化…');
+    WordForms.lookup(word).then(function (r) {
+      if (!r) { toast('查不到「' + word + '」的詞性變化（WordNet 沒收這個字，或是沒有其他詞性的家族）'); return; }
+      Editor.History.checkpoint(root);
+      insertWordFormsTable(root, word, r);
+      root.dispatchEvent(new Event('input'));
+      toast('已加入「' + word + '」的詞性變化');
+    });
+  }
+
   function addTextAfter(b, text, tab) {
     var i = note.blocks.indexOf(b);
     var nb = M.newBlock('text', { html: ocrToHtml(text) });
@@ -2224,6 +2268,13 @@
     clr.title = '清除螢光筆和文字顏色';
     onTap(clr, function () { applySel('hl', 0); });
     row1.appendChild(clr);
+    /* 查英文單字的動／名／形／副，插入表格 */
+    var wf = document.createElement('button');
+    wf.className = 'grp';
+    wf.textContent = '詞';
+    wf.title = '查詞性變化（動/名/形/副，桌機：Alt+W）';
+    onTap(wf, function () { applyWordForms(); });
+    row1.appendChild(wf);
 
     /* 文字顏色：原本只有鍵盤 Alt+Shift+1~5 能用，iPad 上沒有入口 */
     var FC_NAME = ['黑', '紅', '藍', '綠', '橘'];
@@ -2246,6 +2297,13 @@
       onTap(b, function () { applySize(d[1]); });
       row2.appendChild(b);
     });
+    /* 粗體：跟字級一樣不收起色條，加粗後可以馬上比較 */
+    var bw = document.createElement('button');
+    bw.className = 'bw grp';
+    bw.textContent = 'B';
+    bw.title = '粗體（桌機：Ctrl+B）';
+    onTap(bw, function () { applyBold(); });
+    row2.appendChild(bw);
     /* 背單字最常想知道的就是「這個字怎麼念」。
        念完不收起色條、不動選取，方便馬上再按一次放慢念。 */
     if (window.Speak && Speak.supported) {
@@ -2276,6 +2334,26 @@
       /* 包上新標籤後舊的範圍會失效，換成 mark() 重新選好的那個 */
       var s2 = window.getSelection();
       if (s2.rangeCount && !s2.isCollapsed) savedRange = s2.getRangeAt(0).cloneRange();
+    }
+    function applyBold() {
+      restoreSaved();
+      var root = Editor.currentRoot();
+      if (!root) { toast('先選取要加粗的文字'); return; }
+      Editor.History.checkpoint(root);
+      var r = Editor.toggleBold();
+      root = Editor.currentRoot() || root;
+      if (root) root.dispatchEvent(new Event('input'));
+      if (!r) { toast('先選取要加粗的文字'); return; }
+      /* 跟字級一樣不收起色條：常常會想馬上比較加粗前後的樣子 */
+      var s2 = window.getSelection();
+      if (s2.rangeCount && !s2.isCollapsed) savedRange = s2.getRangeAt(0).cloneRange();
+    }
+    function applyWordForms() {
+      restoreSaved();
+      var root = Editor.currentRoot();
+      var s2 = window.getSelection();
+      var word = s2 && s2.rangeCount ? s2.toString().trim() : '';
+      lookupWordForms(root, word);
     }
     function applySel(kind, n) {
       restoreSaved();
@@ -2651,6 +2729,17 @@
         return;
       }
       if (k.toLowerCase() === 'q') { e.preventDefault(); manualCard(); return; }
+      /* Alt+W：查選取的英文字的詞性變化（動／名／形／副），
+         插進文字區最後面的表格裡 */
+      if (k.toLowerCase() === 'w') {
+        e.preventDefault();
+        if (!editing) return;
+        var wroot = Editor.currentRoot();
+        var wsel = window.getSelection();
+        var wword = wsel && wsel.rangeCount ? wsel.toString().trim() : '';
+        lookupWordForms(wroot, wword);
+        return;
+      }
       if (k.toLowerCase() === 'b') { e.preventDefault(); Ink.setMode('pen'); return; }
       if (k.toLowerCase() === 'h') { e.preventDefault(); Ink.setMode('hl'); return; }
       if (k.toLowerCase() === 'e') { e.preventDefault(); Ink.setMode('eraser'); return; }
@@ -2658,6 +2747,40 @@
     }
 
     if (e.ctrlKey && k.toLowerCase() === 's') { e.preventDefault(); save(); return; }
+
+    /* Ctrl+B：選取的文字加粗／取消加粗（跟 Word 一樣）。
+       一律先 preventDefault：Chrome 的 Ctrl+B 預設是切換書籤列，
+       在這個單一用途的筆記工具裡不需要那個，攔下來比較不會誤觸。 */
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && k.toLowerCase() === 'b') {
+      e.preventDefault();
+      var broot = Editor.currentRoot();
+      if (!broot) { toast('先選取要加粗的文字'); return; }
+      Editor.History.checkpoint(broot);
+      var br = Editor.toggleBold();
+      broot = Editor.currentRoot() || broot;
+      if (broot) broot.dispatchEvent(new Event('input'));
+      if (!br) toast('先選取要加粗的文字');
+      return;
+    }
+
+    /* F4：重複上一個文字標記動作（螢光筆／字色／字級／粗體），跟 Office 的
+       F4 一樣 —— 套色到一個字之後，選下一個字按 F4 就再套一次，不用每次
+       都找按鈕或按 Alt 數字鍵。只記得住最近一次的文字標記，
+       不會去重複插入圖片、刪除區塊這類其他動作。 */
+    if (k === 'F4' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      var froot = Editor.currentRoot();
+      var fsel = window.getSelection();
+      if (froot && fsel && fsel.rangeCount && !fsel.isCollapsed) {
+        e.preventDefault();
+        if (!Editor.lastAction) { toast('還沒有可以重複的標記動作'); return; }
+        Editor.History.checkpoint(froot);
+        var fr = Editor.lastAction();
+        froot = Editor.currentRoot() || froot;
+        if (froot) froot.dispatchEvent(new Event('input'));
+        if (!fr) toast('套用失敗，請重新選取文字');
+        return;
+      }
+    }
 
     /* 復原／重做：畫筆模式下即使游標還在文字區也要作用在筆跡 */
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {

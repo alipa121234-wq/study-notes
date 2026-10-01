@@ -238,6 +238,7 @@ body.mode-draw .block .bar{display:none;}
 .hl-4{background:var(--hl4);} .hl-5{background:var(--hl5);}
 .fc-1{color:var(--fc1);} .fc-2{color:var(--fc2);} .fc-3{color:var(--fc3);}
 .fc-4{color:var(--fc4);} .fc-5{color:var(--fc5);}
+.fw-1{font-weight:700;}
 
 /* ---------------- status bar ---------------- */
 #statusbar{
@@ -383,6 +384,7 @@ body.side-open #sideMask{display:block;}
 #selbar .grp{margin-left:6px;}
 #selbar button.fcA{font-weight:800;font-size:16px;}
 #selbar button.sz{font-weight:700;font-size:13px;width:38px;}
+#selbar button.bw{font-weight:800;font-size:15px;}
 #selbar button{
   width:32px;height:32px;border-radius:9px;border:1px solid var(--line);
   background:#fff;font-size:14px;cursor:pointer;padding:0;

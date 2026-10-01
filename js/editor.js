@@ -6,6 +6,13 @@
 
   var Editor = {};
 
+  /* 最近一次成功套用的文字標記動作（螢光筆／字色／字級／粗體）。
+     F4（app.js 裡的鍵盤處理）會直接呼叫這個函式，在新選取的文字上
+     重做一次同樣的事，不用再找按鈕或記快捷鍵。
+     故意只記「怎麼做」（一個函式），不記當時選到的文字範圍 ——
+     F4 要套用在使用者現在選的新範圍，不是原本那一段。 */
+  Editor.lastAction = null;
+
   function editableRoot(node) {
     while (node && node !== document.body) {
       if (node.nodeType === 1 && node.classList && node.classList.contains('content') &&
@@ -93,7 +100,7 @@
   }
 
   function stripKind(el, kind) {
-    /* kind 只會是程式裡寫死的 hl（螢光筆）／fc（字色）／fs（字級） */
+    /* kind 只會是程式裡寫死的 hl（螢光筆）／fc（字色）／fs（字級）／fw（粗細） */
     var re = new RegExp('^' + kind + '(-\\d)?$');
     var list = [el].concat(el.nodeType === 1 ? Array.prototype.slice.call(el.querySelectorAll('*')) : []);
     list.forEach(function (e) {
@@ -120,8 +127,8 @@
 
   /**
    * 套用標記
-   * @param kind 'hl' 螢光筆 | 'fc' 字色
-   * @param idx  1~5 ；0 = 清除該類標記
+   * @param kind 'hl' 螢光筆 | 'fc' 字色 | 'fs' 字級 | 'fw' 粗細
+   * @param idx  1~5（fw 只用 1）；0 = 清除該類標記
    */
   Editor.mark = function (kind, idx) {
     var sel = global.getSelection();
@@ -163,8 +170,29 @@
         sel.removeAllRanges(); sel.addRange(r);
       }
     } catch (e) { /* ignore */ }
+    /* 記下這次動作，F4 才有東西可以重複。
+       toggleBold／clearMarks／stepSize 這些「複合」動作會在自己成功之後
+       把這裡覆寫成呼叫它們自己（同步執行，覆寫一定發生在這行之後）——
+       這樣 F4 重複的是「切換粗體」「兩種標記都清掉」這些完整的意思，
+       不是凍結成當時算出來的某個 kind/idx。 */
+    Editor.lastAction = function () { return Editor.mark(kind, idx); };
     return true;
   };
+
+  /* 選取範圍裡「第一個有內容的文字節點」。
+     字級、粗體都是「以選取開頭那個字目前的狀態為準」，共用同一套找法。 */
+  function firstSelectedTextNode(range, root) {
+    var sc = range.startContainer;
+    if (sc.nodeType === 3 && range.startOffset < sc.nodeValue.length && sc.nodeValue.slice(range.startOffset).trim()) {
+      return sc;
+    }
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), n;
+    while ((n = w.nextNode())) {
+      if (range.intersectsNode(n) && n.nodeValue.trim() &&
+        !(n === sc && range.startOffset >= n.nodeValue.length)) return n;
+    }
+    return null;
+  }
 
   /* ---------- 字級 ----------
      小／正常／大／更大／特大 五段。「正常」不包任何標籤，
@@ -196,27 +224,58 @@
     var range = sel.getRangeAt(0);
     var root = editableRoot(range.startContainer);
     if (!root) return null;
-    var first = null, sc = range.startContainer;
-    if (sc.nodeType === 3 && range.startOffset < sc.nodeValue.length && sc.nodeValue.slice(range.startOffset).trim()) {
-      first = sc;
-    } else {
-      var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), n;
-      while ((n = w.nextNode())) {
-        if (range.intersectsNode(n) && n.nodeValue.trim() &&
-          !(n === sc && range.startOffset >= n.nodeValue.length)) { first = n; break; }
-      }
-    }
+    var first = firstSelectedTextNode(range, root);
     if (!first) return null;
     var cur = sizeLevelOf(first, root);
     var next = Math.max(0, Math.min(SIZE_NAME.length - 1, cur + delta));
     if (next === cur) return { level: cur, name: SIZE_NAME[cur], same: true };
     if (!Editor.mark('fs', SIZE_CLASS[next])) return null;
+    /* 覆寫掉 Editor.mark 剛剛記的「套成 fs-N」—— F4 重複的應該是
+       「再變大一級」這個相對動作，不是每次都凍結套用同一個絕對大小
+       （跟 Office 的放大字級重複行為一致）。 */
+    Editor.lastAction = function () { return Editor.stepSize(delta); };
     return { level: next, name: SIZE_NAME[next], same: false };
+  };
+
+  /* ---------- 粗細 ----------
+     只做「正常／粗體」二選一，不像字級分五段：常用的中文系統字型
+     （微軟正黑體、蘋方…）大多只有 Regular 和 Bold 兩種粗細真的畫得出來，
+     中間的級數瀏覽器會直接顯示成兩者之一，做成多段反而沒有意義。 */
+  function boldAt(node, root) {
+    var el = node && node.nodeType === 3 ? node.parentNode : node;
+    while (el && el !== root) {
+      if (el.classList && el.classList.contains('fw')) return true;
+      el = el.parentNode;
+    }
+    return false;
+  }
+  /**
+   * 切換選取範圍的粗體。以開頭那個字目前是不是粗體為準，整段套成同一個狀態
+   * （目前粗體就整段拿掉，目前不是就整段加上，不會半段粗半段不粗）。
+   * @return null（沒有選取）或 { bold }
+   */
+  Editor.toggleBold = function () {
+    var sel = global.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
+    var range = sel.getRangeAt(0);
+    var root = editableRoot(range.startContainer);
+    if (!root) return null;
+    var first = firstSelectedTextNode(range, root);
+    if (!first) return null;
+    var was = boldAt(first, root);
+    if (!Editor.mark('fw', was ? 0 : 1)) return null;
+    /* 覆寫成「切換」而不是凍結成這次算出來的方向 —— 每次 F4 都要重新
+       看新選取範圍目前的狀態，該加粗就加、該拿掉就拿掉。 */
+    Editor.lastAction = function () { return Editor.toggleBold(); };
+    return { bold: !was };
   };
 
   Editor.clearMarks = function () {
     var ok1 = Editor.mark('hl', 0);
     var ok2 = Editor.mark('fc', 0);
+    /* 覆寫掉 Editor.mark 最後記的那個（只會是 fc,0）—— F4 應該重複
+       「兩種標記都清掉」，不是只清字色。 */
+    Editor.lastAction = function () { return Editor.clearMarks(); };
     return ok1 || ok2;
   };
 
@@ -315,7 +374,7 @@
      其餘標籤拆掉只留文字，屬性除了 colspan/rowspan 全部丟掉。
      @return 過濾後的 HTML；內容裡沒有表格時回傳空字串（交給純文字的路徑） */
   var KEEP_TAGS = /^(TABLE|THEAD|TBODY|TFOOT|TR|TD|TH|BR|SPAN|B|I|U|EM|STRONG|MARK)$/;
-  var KEEP_CLASS = /^(hl|fc|fs)(-\d)?$|^ocr-table$/;
+  var KEEP_CLASS = /^(hl|fc|fs|fw)(-\d)?$|^ocr-table$|^wordfam-table$/;
   Editor.sanitizePaste = function (html) {
     var box = document.createElement('div');
     box.innerHTML = String(html || '');
