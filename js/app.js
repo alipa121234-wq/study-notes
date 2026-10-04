@@ -751,10 +751,23 @@
   /* 只清空白，不能清跳格：跳格現在是表格欄位的分隔 */
   var CJK_GAP = new RegExp('([' + CJK + '])[ ]+(?=[' + CJK + '])', 'g');
 
+  /* 序數的字尾完全由數字決定：1 -> st、2 -> nd、3 -> rd，其餘 th，
+     但 11、12、13 例外（11th、12th、13th）。所以只要確定那裡是「數字＋序數」，
+     字尾一定還原得出來，不用管 OCR 把上標的小字讀成什麼。 */
+  function ordSuffix(numStr) {
+    var n = parseInt(numStr, 10), t = n % 100, o = n % 10;
+    if (t >= 11 && t <= 13) return 'th';
+    return o === 1 ? 'st' : o === 2 ? 'nd' : o === 3 ? 'rd' : 'th';
+  }
+
   function tidyOcr(t) {
     return String(t || '')
       .replace(/\r/g, '')
       .replace(CJK_GAP, '$1')
+      /* 序數的上標字尾（10th、21st）常被拆成「21 st」，而且偶爾讀錯（2th、1nd）。
+         先把它接回去，再依數字改成對的字尾。只接空白，不接跳格 —— 跳格是欄位分隔。 */
+      .replace(/(\d)[ ]+(st|nd|rd|th)\b/gi, '$1$2')
+      .replace(/\b(\d+)(st|nd|rd|th)\b/gi, function (all, n) { return n + ordSuffix(n); })
       /* 行首的編號「1.」很常被認成小寫 L；英文裡沒有以「l.」開頭的句子 */
       .replace(/^l\.(?=\s)/gm, '1.')
       /* 講義上的小圖示（「同」的圓形底、項目符號）會被讀成圓圈符號，
@@ -1618,9 +1631,10 @@
       x.putImageData(px, 0, 0);
       return c;
     };
-    var variant = function (smooth) {
+    var variant = function (smooth, scale) {
+      var sc = scale || f;
       var c = document.createElement('canvas');
-      c.width = w * f; c.height = h * f;
+      c.width = w * sc; c.height = h * sc;
       var x = c.getContext('2d');
       x.imageSmoothingEnabled = smooth;
       if (smooth) x.imageSmoothingQuality = 'high';
@@ -1664,8 +1678,8 @@
     var rules = gapMode === 'blank' ? null
       : { h: findRules(src, f, false), v: findRules(src, f, true) };
     /* 一個一個做、做完就放掉，不要好幾張大圖同時留在記憶體裡 */
-    var blobOfNew = function (smooth, toGray) {
-      var c = variant(smooth);
+    var blobOfNew = function (smooth, toGray, scale) {
+      var c = variant(smooth, scale);
       if (toGray) gray(c);
       return blobOf(c).then(function (bl) { c.width = c.height = 0; return bl; });
     };
@@ -1673,8 +1687,20 @@
     /* 先跑「原圖」和「平滑灰階」兩份就好，大部分的圖這樣就夠了。
        排成表格之後如果看起來有缺格，才再多跑兩份（不平滑灰階、英文引擎）。
        四份全跑：大張的表格要十秒，一般的圖六秒；只跑兩份大約一半。 */
-    Promise.all([blobOfNew(true, false), blobOfNew(true, true)])
-      .then(function (bl) { return Promise.all([send(bl[0]), soft(send(bl[1]))]); })
+    /* 英文引擎（只用來還原序數的上標字尾，見 recoverOrdinals）多放大一倍：
+       上標字只有正常字的六成大，再放大一點才讀得準（這張圖 3 倍時
+       May 2nd 讀成「2 d」，4 倍就對了）。放不下就維持原倍率。 */
+    var enScales = [];
+    [f + 1, f + 2].forEach(function (s) {
+      if (px * s * s <= 30e6 && Math.max(w, h) * s <= 8000) enScales.push(s);
+    });
+    if (!enScales.length) enScales.push(f);
+    Promise.all([blobOfNew(true, false), blobOfNew(true, true)].concat(
+      wantEn ? enScales.map(function (s) { return blobOfNew(true, true, s); }) : []))
+      .then(function (bl) {
+        return Promise.all([send(bl[0]), soft(send(bl[1]))].concat(
+          bl.slice(2).map(function (b2) { return soft(send(b2, 'en-US')); })));
+      })
       .then(function (res) {
         counts = res.map(function (x) { return x ? x.lines.length : null; });
         /* 以「彩色原圖」那份為底，再用灰階補它漏掉的。灰階把淺色字變深、
@@ -1684,6 +1710,13 @@
            彩色那份萬一失敗才退回灰階。 */
         var j = res[0] || res[1];
         if (res[0] && res[1]) j = mergeOcr(res[0], res[1], false);
+        for (var ei = 2; ei < res.length; ei++) {
+          if (!res[ei]) continue;
+          var k = f / enScales[ei - 2];          // 英文那份放大的倍率不同，座標換回同一個尺度
+          j = recoverOrdinals(j, { lines: res[ei].lines.map(function (l) {
+            return { t: l.t, x: l.x * k, y: l.y * k, w: l.w * k, h: l.h * k };
+          }) });
+        }
         if (!holesIn(j, lead0(), gapMode, rules)) return j;
         toast('有幾格沒讀到，再試一次…');
         return blobOfNew(false, true).then(function (bl2) {
@@ -1720,37 +1753,87 @@
    *               中文引擎卻讀出怪符號」的格子（fa Ⅱ -> fall）。
    *               中文格不會被動到：英文引擎根本讀不出中文，那些位置也早就有東西了。
    */
+  /* 兩份辨識結果裡的兩行，是不是圖上同一個位置（同一格）。
+     同一格在兩份裡可能被讀成不一樣的字（單字 -> 「0 0 宀」和「里子」），
+     框只差幾個像素，要當成同一格，不然同一列會被拆成兩列。 */
+  function ocrSameCell(la, lb) {
+    var a = [la.x, la.y, la.x + la.w, la.y + la.h];
+    var b = [lb.x, lb.y, lb.x + lb.w, lb.y + lb.h];
+    var x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]);
+    var x2 = Math.min(a[2], b[2]), y2 = Math.min(a[3], b[3]);
+    if (x2 > x1 && y2 > y1) {
+      var small = Math.min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]));
+      if (small && (x2 - x1) * (y2 - y1) / small > 0.25) return true;
+    }
+    /* 兩份讀到的框高度可能差很多（「0 0 宀」只框到上半部），重疊面積不夠看。
+       左右幾乎完全重疊、中心高度又差不到一個字，就是同一格。 */
+    var ox = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+    var narrow = Math.min(a[2] - a[0], b[2] - b[0]);
+    if (ox <= 0 || !narrow) return false;
+    var cyA = (a[1] + a[3]) / 2, cyB = (b[1] + b[3]) / 2;
+    var tall = Math.max(a[3] - a[1], b[3] - b[1]);
+    return ox / narrow > 0.6 && Math.abs(cyA - cyB) < tall * 0.9;
+  }
+
+  /**
+   * 用英文引擎的結果，把中文引擎吃掉或讀歪的序數字尾還原回來。
+   * 講義上的 10th、2nd、21st 的字尾是縮小、抬高的上標字，中文引擎常把它
+   * 吃掉（10th -> 10）、讀歪（2nd -> 2d），甚至連旁邊的數字一起丟（21st -> 2）；
+   * 英文引擎讀得回來。只動「英文那一行裡有序數、中文那一行同位置卻沒有」的
+   * 那個字，其他字完全不碰；兩邊字數對不上就整行不動，寧可漏掉也不要改錯。
+   * 英文引擎沒有序數的行、含中文的行一律略過。
+   * @param en 英文引擎的結果，座標要先換算成跟 base 同一個倍率
+   */
+  function recoverOrdinals(base, en) {
+    if (!en || !en.lines || !base || !base.lines) return base;
+    var HAS_CJK = new RegExp('[' + CJK + ']');
+    var toks = function (t) { return String(t).split(/\s+/).filter(Boolean); };
+    var core = function (w) { return w.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ''); };
+    en.lines.forEach(function (e) {
+      var et = String(e.t).replace(/(\d)[ ]+(st|nd|rd|th)\b/gi, '$1$2')
+        .replace(/\b(\d+)[ ]+d\b/g, function (all, n) { return ordSuffix(n) === 'nd' ? n + 'nd' : all; });
+      if (!/\d(st|nd|rd|th)\b/i.test(et)) return;
+      var hit = null;
+      for (var i = 0; i < base.lines.length; i++) {
+        if (ocrSameCell(e, base.lines[i])) { hit = base.lines[i]; break; }
+      }
+      if (!hit || HAS_CJK.test(hit.t)) return;
+      var zt = toks(hit.t), ez = toks(et), zi = [], ei = [];
+      zt.forEach(function (w, k) { if (/[A-Za-z0-9]/.test(w)) zi.push(k); });
+      ez.forEach(function (w, k) { if (/[A-Za-z0-9]/.test(w)) ei.push(k); });
+      if (zi.length !== ei.length) return;
+      var changed = false;
+      for (var k = 0; k < zi.length; k++) {
+        var m = /^(\d+)(st|nd|rd|th)$/i.exec(core(ez[ei[k]]));
+        if (!m) continue;
+        var zc = core(zt[zi[k]]);
+        if (/^\d+(st|nd|rd|th)$/i.test(zc)) continue;                 // 中文引擎本來就讀對了
+        var dm = /^(\d+)[A-Za-z]{0,2}$/.exec(zc);                     // 數字後面跟著 0~2 個讀歪的字母
+        if (!dm || m[1].indexOf(dm[1]) !== 0) continue;
+        zt[zi[k]] = zt[zi[k]].replace(zc, m[1] + ordSuffix(m[1]));
+        /* 上標字被讀成的引號、撇號之類的雜訊，緊接在後面的一併拿掉 */
+        var nx = zi[k] + 1;
+        if (nx < zt.length && !/[A-Za-z0-9]/.test(zt[nx]) && /^["'`\u201c\u201d\u2018\u2019\u2032\u2033|^\u00b0]+$/.test(zt[nx])) zt.splice(nx, 1);
+        changed = true;
+      }
+      if (changed) {
+        hit.t = zt.join(' ');
+        hit.w = Math.max(hit.x + hit.w, e.x + e.w) - hit.x;           // 框也要涵蓋回來的字尾
+      }
+    });
+    return base;
+  }
+
   function mergeOcr(base, extra, fromEn) {
     if (!extra || !extra.lines || !base || !base.lines) return base;
-    var box = function (l) { return [l.x, l.y, l.x + l.w, l.y + l.h]; };
-    var overlap = function (a, b) {
-      var x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1]);
-      var x2 = Math.min(a[2], b[2]), y2 = Math.min(a[3], b[3]);
-      if (x2 <= x1 || y2 <= y1) return 0;
-      var small = Math.min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]));
-      return small ? (x2 - x1) * (y2 - y1) / small : 0;
-    };
     var latin = function (t) { return (String(t).match(/[A-Za-z]/g) || []).length; };
     var clean = function (t) { return /^[A-Za-z0-9 ,.'\-]+$/.test(String(t).trim()); };
-    /* 同一格在兩份裡被讀成不一樣的字（單字 -> 「0 0 宀」和「里子」），
-       框只差幾個像素，要當成同一格，不然同一列會被拆成兩列 */
-    var sameCell = function (a, b) {
-      if (overlap(a, b) > 0.25) return true;
-      /* 兩份讀到的框高度可能差很多（「0 0 宀」只框到上半部），重疊面積不夠看。
-         左右幾乎完全重疊、中心高度又差不到一個字，就是同一格。 */
-      var ox = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
-      var narrow = Math.min(a[2] - a[0], b[2] - b[0]);
-      if (ox <= 0 || !narrow) return false;
-      var cyA = (a[1] + a[3]) / 2, cyB = (b[1] + b[3]) / 2;
-      var tall = Math.max(a[3] - a[1], b[3] - b[1]);
-      return ox / narrow > 0.6 && Math.abs(cyA - cyB) < tall * 0.9;
-    };
     var lines = base.lines.slice();
     (extra.lines || []).forEach(function (e) {
       if (fromEn && !latin(e.t)) return;                       // 英文引擎讀中文只會出垃圾
-      var eb = box(e), hit = null;
+      var hit = null;
       for (var i = 0; i < lines.length; i++) {
-        if (sameCell(eb, box(lines[i]))) { hit = lines[i]; break; }
+        if (ocrSameCell(e, lines[i])) { hit = lines[i]; break; }
       }
       if (!hit) { lines.push(e); return; }
       if (!fromEn) return;
