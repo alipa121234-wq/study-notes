@@ -2003,6 +2003,72 @@
     });
   }
 
+  /* 點兩下英文字 -> 浮一個小提示顯示中文意思（還有動／名／形／副），
+     不用離開正在寫的地方；提示上的「加入表格」才會把四態表插進筆記。
+     手機沒有點兩下，選字後色條上的「譯」按鈕做同一件事。 */
+  var wordTip = null, wordTipOff = [];
+  function hideWordTip() {
+    if (wordTip) wordTip.classList.remove('on');
+    clearTimeout(hideWordTip.t);
+  }
+  function showWordTip(word, root, rect) {
+    word = String(word || '').trim().replace(/['\u2019]s$/i, '');
+    if (!/^[A-Za-z][A-Za-z'\u2019-]*$/.test(word) || !window.WordForms) return;
+    if (!wordTip) {
+      wordTip = document.createElement('div');
+      wordTip.id = 'wordtip';
+      /* 按提示本身不要讓文字的選取消失 */
+      wordTip.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      document.body.appendChild(wordTip);
+      var away = function (e) { if (!wordTip.contains(e.target)) hideWordTip(); };
+      document.addEventListener('mousedown', away, true);
+      document.addEventListener('touchstart', away, true);
+      document.addEventListener('keydown', hideWordTip, true);
+      window.addEventListener('scroll', hideWordTip, true);
+    }
+    var place = function () {
+      var w = wordTip.offsetWidth, h = wordTip.offsetHeight;
+      var left = Math.max(8, Math.min(rect.left, window.innerWidth - w - 8));
+      var top = rect.bottom + 6;
+      if (top + h > window.innerHeight - 8) top = Math.max(8, rect.top - h - 6);
+      wordTip.style.left = left + 'px';
+      wordTip.style.top = top + 'px';
+    };
+    WordForms.lookup(word).then(function (r) {
+      var html;
+      var pos = r ? [['\u52d5', r.v], ['\u540d', r.n], ['\u5f62', r.a], ['\u526f', r.r]].filter(function (p) { return p[1].length; })
+        .map(function (p) { return '<span>' + p[0] + ' ' + esc(p[1].slice(0, 2).join('\u3001')) + '</span>'; }).join('') : '';
+      if (!r || (!r.cn && !pos)) {
+        html = '<b>' + esc(word) + '</b><div class="wt-none">\u67e5\u4e0d\u5230\u9019\u500b\u5b57\uff08\u5b57\u5178\u6c92\u6536\uff0c\u6216\u62fc\u5b57\u4e0d\u5c0d\uff09</div>';
+      } else {
+        var shown = r.word.toLowerCase() !== word.toLowerCase() ? esc(word) + ' \u2192 ' + esc(r.word) : esc(r.word);
+        html = '<b>' + shown + '</b>' + (r.cn ? '<div class="wt-cn">' + esc(r.cn) + '</div>' : '') +
+          (pos ? '<div class="wt-pos">' + pos + '</div>' : '') +
+          (root ? '<button type="button">\u52a0\u5165\u8868\u683c</button>' : '');
+      }
+      wordTip.innerHTML = html;
+      var btn = wordTip.querySelector('button');
+      if (btn) btn.addEventListener('click', function () { hideWordTip(); lookupWordForms(root, word); });
+      wordTip.classList.add('on');
+      place();
+      clearTimeout(hideWordTip.t);
+      hideWordTip.t = setTimeout(hideWordTip, r ? 12000 : 2500);
+    });
+  }
+
+  document.addEventListener('dblclick', function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest('input,textarea,select,button,#wordtip')) return;
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    var word = sel.toString().trim();
+    if (!/^[A-Za-z][A-Za-z'\u2019-]*$/.test(word)) return;
+    var rg = sel.getRangeAt(0);
+    var rr = rg.getBoundingClientRect();
+    if (!rr.width && !rr.height) return;
+    showWordTip(word, Editor.currentRoot(), rr);
+  });
+
   function addTextAfter(b, text, tab) {
     var i = note.blocks.indexOf(b);
     var nb = M.newBlock('text', { html: ocrToHtml(text) });
@@ -2358,6 +2424,11 @@
     wf.title = '查詞性變化（動/名/形/副，桌機：Alt+W）';
     onTap(wf, function () { applyWordForms(); });
     row1.appendChild(wf);
+    var tr0 = document.createElement('button');
+    tr0.textContent = '譯';
+    tr0.title = '查選取的英文字的中文意思（桌機：點兩下英文字）';
+    onTap(tr0, function () { applyTranslate(); });
+    row1.appendChild(tr0);
 
     /* 文字顏色：原本只有鍵盤 Alt+Shift+1~5 能用，iPad 上沒有入口 */
     var FC_NAME = ['黑', '紅', '藍', '綠', '橘'];
@@ -2430,6 +2501,15 @@
       /* 跟字級一樣不收起色條：常常會想馬上比較加粗前後的樣子 */
       var s2 = window.getSelection();
       if (s2.rangeCount && !s2.isCollapsed) savedRange = s2.getRangeAt(0).cloneRange();
+    }
+    function applyTranslate() {
+      restoreSaved();
+      var s2 = window.getSelection();
+      var word = s2 && s2.rangeCount ? s2.toString().trim() : '';
+      if (!word || !s2.rangeCount) { toast('先選取要查的英文字'); return; }
+      var rr = s2.getRangeAt(0).getBoundingClientRect();
+      if (!/^[A-Za-z][A-Za-z'’-]*$/.test(word.replace(/['’]s$/i, ''))) { toast('請只選一個英文字'); return; }
+      showWordTip(word, Editor.currentRoot(), rr);
     }
     function applyWordForms() {
       restoreSaved();
