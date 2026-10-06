@@ -1733,6 +1733,18 @@
         lines: j.lines, scale: f, size: [w, h], counts: counts, merged: j.lines.length,
         bitmap: (typeof ImageBitmap !== 'undefined') && (img instanceof ImageBitmap)
       };
+      /* 有畫線、而且有合併儲存格（一格跨好幾列／欄）的表格，改用圖上的線
+         還原格子結構；沒有合併、線抓不準的都交回下面原本的做法 */
+      var grid = null;
+      if (gapMode !== 'blank' && window.OcrGrid) {
+        try {
+          grid = OcrGrid.build({
+            lines: dropLineJunk(splitVerticalMisreads(j.lines || [])),
+            src: src, f: f, rulesH: rules.h
+          });
+        } catch (e) { grid = null; }
+      }
+      if (grid) return finishGrid(b, grid);
       var text = tidyOcr(assembleOcr(j.lines, leadFor(j), gapMode, rules));
       if (!text) { toast('這張圖沒有辨識到文字'); return; }
       /* 英文錯字校正（oadministrator、fi t、-aln…）。字典載不到就原文照用 */
@@ -1959,6 +1971,28 @@
     return '<table class="ocr-table">' + body + '</table>';
   }
 
+  /* 用圖上的線還原出來的表格（含 rowspan／colspan）：每一格各自整理、拼字校正，
+     再組成 HTML 直接放進筆記。文字格式的跳格沒辦法表達合併儲存格。 */
+  function finishGrid(b, g) {
+    var cells = [];
+    g.rows.forEach(function (row) { row.forEach(function (cl) { cells.push(cl); }); });
+    return Promise.all(cells.map(function (cl) {
+      return Spell.fix(tidyOcr(cl.t)).then(function (r) { cl.t = r.text; return r.count; });
+    })).then(function (counts) {
+      var fixed = counts.reduce(function (s, n) { return s + n; }, 0);
+      var body = g.rows.map(function (row) {
+        return '<tr>' + row.map(function (cl) {
+          return '<td' + (cl.rs > 1 ? ' rowspan="' + cl.rs + '"' : '') +
+            (cl.cs > 1 ? ' colspan="' + cl.cs + '"' : '') + '>' +
+            esc(cl.t).replace(/[\u2028\n]/g, '<br>') + '</td>';
+        }).join('') + '</tr>';
+      }).join('');
+      addTextAfter(b, '', null, '<table class="ocr-table">' + body + '</table>');
+      toast('已轉成 ' + g.rows.length + ' 列的表格（含合併儲存格）' +
+        (fixed ? '，修正 ' + fixed + ' 個疑似錯字' : '') + ' —— 請先校對錯字再標記');
+    });
+  }
+
   /* 把查到的「四態」插進目前這個文字區的最後面，累積成一張詞性變化表
      （跟使用者自己整理的字尾表外觀一致，沿用 .ocr-table 的樣式）。
      同一區塊裡如果最後面已經有一張這種表，就多加一列，不會每記一個字
@@ -2069,9 +2103,9 @@
     showWordTip(word, Editor.currentRoot(), rr);
   });
 
-  function addTextAfter(b, text, tab) {
+  function addTextAfter(b, text, tab, html) {
     var i = note.blocks.indexOf(b);
-    var nb = M.newBlock('text', { html: ocrToHtml(text) });
+    var nb = M.newBlock('text', { html: html || ocrToHtml(text) });
     if (tab) nb.tab = tab;                    // 這一塊自己的跳格間隔（單位：字元寬）
     note.blocks.splice(i + 1, 0, nb);
     pushBlockHist({ kind: 'add', block: nb, index: i + 1 });

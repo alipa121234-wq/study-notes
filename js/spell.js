@@ -175,6 +175,16 @@
   function fixText(s) {
     var count = 0;
 
+    /* 0. 英文字裡的 l 被讀成直線（Only -> On | y）。接起來剛好是字典裡的字才改；
+       兩邊本來就各是一個字的（or | and）是真的分隔線，不動 */
+    s = s.replace(/\b([A-Za-z]{1,12}) ?[|｜丨] ?([A-Za-z]{1,12})\b/g, function (all, a, b) {
+      if (a.length > 1 && b.length > 1 && Spell.has(a) && Spell.has(b)) return all;
+      var j = a + 'l' + b;
+      if (!Spell.has(j)) return all;
+      count++;
+      return j;
+    });
+
     /* 1. 字尾：「-」後面接幾個字母 */
     s = s.replace(/([-—–])\s?([A-Za-z]{2,10})(?![A-Za-z])/g, function (all, dash, body) {
       var f = fixSuffix(body);
